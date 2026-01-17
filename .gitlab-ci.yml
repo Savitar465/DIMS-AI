@@ -1,0 +1,125 @@
+image: docker:dind
+
+services:
+  - name: docker:dind
+    command: [ "--insecure-registry=192.168.101.243:5050" ]
+
+variables:
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: ""
+  DOCKER_HOST: tcp://docker:2375
+  DOCKER_IMAGE_NAME: desarollo-qa/ms-chat
+  IMAGE_VERSION: 1.0.0
+
+stages:
+  - sonarqube-check
+  - build
+  - test
+  - package
+  - deploy
+
+sonarqube-check:
+  stage: sonarqube-check
+  image:
+    name: sonarsource/sonar-scanner-cli:5.0
+    entrypoint: [""]
+  variables:
+    SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"  # Defines the location of the analysis task cache
+    GIT_DEPTH: "0"  # Tells git to fetch all the branches of the project, required by the analysis task
+  cache:
+    key: "${CI_JOB_NAME}"
+    paths:
+      - .sonar/cache
+  script:
+    - sonar-scanner
+  allow_failure: true
+  only:
+    - merge_requests
+    - dev
+    - main
+
+#build:
+#  image: maven:3.9.6-eclipse-temurin-21-alpine
+#  stage: build
+#  before_script:
+#    - keytool -importcert -file certs/_.gitlab.usecc.crt -keystore $JAVA_HOME/lib/security/cacerts -storepass changeit -noprompt
+#  script:
+#    - mvn $MAVEN_OPTS clean package -s settings.xml
+#  artifacts:
+#    paths:
+#      - target/*.jar
+#  only:
+#    - dev
+#    - main
+
+#test:
+#  image: maven:3.9.6-eclipse-temurin-21-alpine
+#  stage: test
+#  before_script:
+#    - keytool -importcert -file certs/_.gitlab.usecc.crt -keystore $JAVA_HOME/lib/security/cacerts -storepass changeit -noprompt
+#  script:
+#    - mvn test -s settings.xml
+#  artifacts:
+#    when: always
+#    reports:
+#      junit:
+#        - target/surefire-reports/TEST-*.xml
+#        - target/failsafe-reports/TEST-*.xml
+#  only:
+#    - merge_requests
+#    - dev
+#    - main
+#
+#testVuln:
+#  stage: test
+#  before_script:
+#    - until docker info; do sleep 1; done
+#  script:
+#    - if [ ! -d "odc-reports" ]; then
+#      mkdir -p "odc-reports" ;
+#      fi
+#    - docker volume create --driver local -o type=nfs -o o=addr="192.168.99.53,rw,nfsvers=4" -o device=:/home/node/hdd1/share/nvd nfsdata
+#    - docker run --rm -e user=$USER -u $(id -u ${USER}):$(id -g ${USER}) --volume $(pwd)/src:/src:z --volume $(pwd)/odc-reports:/report:z --mount type=volume,source=nfsdata,target=/data owasp/dependency-check:latest --data /data --noupdate --scan /src --format "ALL" --project "objetos web Service" --out /report
+#  artifacts:
+#    paths:
+#      - odc-reports/*.*
+#  only:
+#    - main
+#    - dev
+#
+#package:
+#  stage: package
+#  before_script:
+#    - until docker info; do sleep 1; done
+#  script:
+#    - echo "Docker package"
+#    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY_URL
+#    - if [ "$CI_COMMIT_REF_NAME" = "dev" ]; then
+#        echo "deploy on dev";
+#        docker build -t $CI_REGISTRY_URL/$DOCKER_IMAGE_NAME:$IMAGE_VERSION-SNAPSHOT . ;
+#        echo "pussshing" ;
+#        docker push $CI_REGISTRY_URL/$DOCKER_IMAGE_NAME:$IMAGE_VERSION-SNAPSHOT ;
+#        elif [ "$CI_COMMIT_REF_NAME" = "main" ]; then
+#        docker build -t $CI_REGISTRY_URL/$DOCKER_IMAGE_NAME:$IMAGE_VERSION . ;
+#        docker push $CI_REGISTRY_URL/$DOCKER_IMAGE_NAME:$IMAGE_VERSION ;
+#        docker tag $CI_REGISTRY_URL/$DOCKER_IMAGE_NAME:$IMAGE_VERSION $CI_REGISTRY_URL/$DOCKER_IMAGE_NAME:latest ;
+#        docker push $CI_REGISTRY_URL/$DOCKER_IMAGE_NAME:latest ;
+#      fi
+#  only:
+#    - dev
+#    - main
+#
+#deploy:
+#  stage: deploy
+#  image:
+#    name: bitnami/kubectl:latest
+#    entrypoint: [ '' ]
+#  script:
+#    - export KUBECONFIG=$(pwd)/kubeconf/delbot.yaml # muy necesario
+#    - kubectl config use-context delbot
+#    - kubectl apply -f kubeconf/objws-deployment.yaml
+#    - kubectl apply -f kubeconf/objws-service.yaml
+#    - kubectl get po -o wide
+#  only:
+#    - main
+#
