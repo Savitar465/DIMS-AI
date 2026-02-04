@@ -1,25 +1,15 @@
 import { Global, Module } from '@nestjs/common';
 import { CqrsModule } from '@nestjs/cqrs';
-import { MongoDatabaseModule } from './interfaces/dependency-injection/mongo-database/mongo-database.module';
-import { EventoModule } from './interfaces/dependency-injection/evento/evento.module';
-import { UsuarioModule } from './interfaces/dependency-injection/usuario/usuario.module';
 import { LoggerModule } from 'nestjs-pino';
 import { ConfigModule } from '@nestjs/config';
 import databaseConfig from './infraestructure/shared/config/database.config';
-import { SalaModule } from './interfaces/dependency-injection/sala/sala.module';
-import { ConfigsModule } from './interfaces/dependency-injection/configs/configs.module';
-import { AuthGuard, KeycloakConnectModule } from 'nest-keycloak-connect';
-import { KeycloakConfigService } from './interfaces/dependency-injection/auth/jwt/keycloak-config.service';
-import { APP_GUARD } from '@nestjs/core';
+import { DimsModule } from './dims.module';
 
 @Global()
 @Module({
   imports: [
-    EventoModule,
-    UsuarioModule,
-    SalaModule,
+    DimsModule,
     CqrsModule,
-    MongoDatabaseModule,
     ConfigModule.forRoot({
       isGlobal: true,
       expandVariables: true,
@@ -47,7 +37,7 @@ import { APP_GUARD } from '@nestjs/core';
     //   imports: [ConfigsModule],
     // }),
   ],
-  exports: [CqrsModule, MongoDatabaseModule],
+  exports: [CqrsModule],
   // providers: [
   //   {
   //     provide: APP_GUARD,
@@ -56,5 +46,4 @@ import { APP_GUARD } from '@nestjs/core';
   // ],
   controllers: [],
 })
-export class AppModule {
-}
+export class AppModule {}
