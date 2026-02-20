@@ -2,6 +2,7 @@ import { Controller, Get, Post, Query, UploadedFile, UseInterceptors } from '@ne
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiTags, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
 import { BuscarSubpartidasUseCase } from 'src/core/application/usecases/dims/buscar-subpartidas.usecase';
+import { BuscarSubpartidasDesdePdfUseCase } from 'src/core/application/usecases/dims/buscar-subpartidas-desde-pdf.usecase';
 import { DigitalizarFacturaUseCase } from 'src/core/application/usecases/dims/digitalizar-factura.usecase';
 
 @ApiTags('DIMS - Automatización con IA')
@@ -9,6 +10,7 @@ import { DigitalizarFacturaUseCase } from 'src/core/application/usecases/dims/di
 export class DimsController {
   constructor(
     private readonly buscarSubpartidasUseCase: BuscarSubpartidasUseCase,
+    private readonly buscarSubpartidasDesdePdfUseCase: BuscarSubpartidasDesdePdfUseCase,
     private readonly digitalizarFacturaUseCase: DigitalizarFacturaUseCase,
   ) {}
 
@@ -38,5 +40,24 @@ export class DimsController {
   @UseInterceptors(FileInterceptor('file'))
   async digitalizarFactura(@UploadedFile() file: Express.Multer.File) {
     return this.digitalizarFacturaUseCase.execute(file.buffer, file.mimetype);
+  }
+
+  @Post('buscar-subpartidas-pdf')
+  @ApiOperation({ summary: 'Sugerir subpartidas desde PDF de factura' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+        },
+      },
+    },
+  })
+  @UseInterceptors(FileInterceptor('file'))
+  async buscarDesdePdf(@UploadedFile() file: Express.Multer.File) {
+    return this.buscarSubpartidasDesdePdfUseCase.execute(file.buffer, file.mimetype);
   }
 }
