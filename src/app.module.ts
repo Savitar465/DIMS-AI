@@ -19,19 +19,35 @@ import { DimsModule } from './dims.module';
         abortEarly: false,
       },
     }),
-    LoggerModule.forRoot({
-      pinoHttp: {
-        transport: {
-          target: 'pino-pretty',
-          options: {
-            levelFirst: true,
-            translateTime: 'SYS:standard',
-            ignore: 'pid,hostname,req,res,responseTime',
+    // Configure pino logger: enable human-friendly `pino-pretty` only in development.
+    LoggerModule.forRoot((() => {
+      const isProd = process.env.NODE_ENV === 'production';
+      if (!isProd) {
+        return {
+          pinoHttp: {
+            transport: {
+              target: 'pino-pretty',
+              options: {
+                levelFirst: true,
+                translateTime: 'SYS:standard',
+                ignore: 'pid,hostname,req,res,responseTime',
+              },
+            },
+            autoLogging: true,
           },
+        };
+      }
+
+      // Production / serverless environments (e.g. Vercel) should not use pino-pretty transport.
+      // Use structured JSON logs which are compatible with log collectors and serverless platforms.
+      return {
+        pinoHttp: {
+          level: 'info',
+          autoLogging: true,
+          // Do not configure a transport here to avoid `unable to determine transport target` errors
         },
-        autoLogging: true,
-      },
-    }),
+      };
+    })()),
     // KeycloakConnectModule.registerAsync({
     //   useExisting: KeycloakConfigService,
     //   imports: [ConfigsModule],
