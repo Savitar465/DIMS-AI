@@ -7,6 +7,7 @@ import { ChatOpenAI } from '@langchain/openai';
 import { PromptTemplate } from '@langchain/core/prompts';
 import { StructuredOutputParser } from '@langchain/core/output_parsers';
 import { z } from 'zod';
+import { Subpartida } from '../../../core/domain/models/subpartida';
 const pdf = require('pdf-parse');
 
 // Small Gemini client wrapper that provides an `invoke` method compatible with LangChain usage in this service.
@@ -223,12 +224,9 @@ export class LangChainAIService implements AIService {
     const prompt = new PromptTemplate({
       template: `Eres un experto en comercio exterior. Tu tarea es encontrar las subpartidas arancelarias más adecuadas para el siguiente producto:
       Producto: "{descripcion}"
-      Línea de negocio (opcional): "{linea}"
 
       Subpartidas disponibles:
       {subpartidas}
-
-      {format_instructions}
       
       Si no encuentras una coincidencia exacta, devuelve las más cercanas.`,
       inputVariables: ['descripcion', 'linea', 'subpartidas'],
@@ -243,16 +241,40 @@ export class LangChainAIService implements AIService {
 
     try {
       const response = await this.model.invoke(input);
-      // Support both LangChain response shape and our Gemini wrapper which returns { content: string }
-      const content = typeof response === 'string' ? response : (response?.content ?? response?.output ?? '');
-      console.log(`[AI Search] LLM response: ${content}`);
-      const output = await parser.parse(content.toString());
+      const contentStr = this.normalizeModelResponse(response);
+      console.log(`[AI Search] Normalized LLM response length: ${contentStr?.length}`);
+      console.log(`[AI Search] Normalized LLM response (truncated): ${contentStr?.slice(0, 1000)}`);
+      // let output: any;
+      // try {
+      //   output = await parser.parse(conntentStr);
+      // } catch (parseErr) {
+      //   console.warn('[AI Search] StructuredOutputParser.parse failed, attempting JSON-extraction fallback');
+      //   try {
+      //     // Try to extract a JSON array from the text and parse it
+      //     const arrayMatch = contentStr.match(/\[[\s\S]*\]/);
+      //     if (arrayMatch) {
+      //       const parsedArray = JSON.parse(arrayMatch[0]);
+      //       if (Array.isArray(parsedArray)) output = parsedArray;
+      //     }
+      //   } catch (e) {
+      //     console.warn('[AI Search] JSON-extraction fallback failed:', e);
+      //   }
+      //
+      //   if (!output) throw parseErr;
+      // }
 
       // Mapear los resultados del LLM de vuelta a los objetos completos de subpartida
-      return output.map(match => {
-        const sub = subpartidasDisponibles.find(s => s.id === match.id);
-        return sub ? { ...sub, razon: match.razon } : null;
-      }).filter(s => s !== null);
+      const subpartidas: Subpartida[] = [
+        {
+          id:'1',
+          descripcion: contentStr,
+          codigo: 'some code',
+          linea: 'otra',
+          arancel: 123
+
+        }
+      ];
+      return subpartidas;
     } catch (error) {
       console.error('[AI Search] Error calling LLM:', error);
       // Fallback a búsqueda simple si el LLM falla
@@ -300,8 +322,26 @@ export class LangChainAIService implements AIService {
 
     try {
       const response = await this.model.invoke(input);
-      const content = typeof response === 'string' ? response : (response?.content ?? response?.output ?? '');
-      const output = await parser.parse(content.toString());
+      const contentStr = this.normalizeModelResponse(response);
+      console.log(`[AI Extraction] Normalized LLM response length: ${contentStr?.length}`);
+      console.log(`[AI Extraction] Normalized LLM response (truncated): ${contentStr?.slice(0, 1000)}`);
+      let output: any;
+      try {
+        output = await parser.parse(contentStr);
+      } catch (parseErr) {
+        console.warn('[AI Extraction] StructuredOutputParser.parse failed, attempting JSON-extraction fallback');
+        try {
+          const objMatch = contentStr.match(/\{[\s\S]*\}/);
+          if (objMatch) {
+            const parsedObj = JSON.parse(objMatch[0]);
+            if (parsedObj && typeof parsedObj === 'object') output = parsedObj;
+          }
+        } catch (e) {
+          console.warn('[AI Extraction] JSON-extraction fallback failed:', e);
+        }
+
+        if (!output) throw parseErr;
+      }
       return output as Partial<Factura>;
     } catch (error) {
       console.error('[AI Extraction] Error calling LLM:', error);
@@ -312,5 +352,64 @@ export class LangChainAIService implements AIService {
         productos: [{ descripcion: 'No se pudo extraer data', cantidad: 0, valorUnitario: 0, valorTotal: 0 }]
       };
     }
+  }
+
+  // Normalize and extract plain text from various LLM client response shapes.
+  // Handles strings, objects with `content`, `parts`, `candidates`, `choices`, and markdown code fences containing JSON.
+  private normalizeModelResponse(response: any): string {
+    const extractFromObject = (obj: any): string | null => {
+      if (!obj) return null;
+      if (typeof obj === 'string') return obj;
+      if (typeof obj.content === 'string') return obj.content;
+      if (typeof obj.output === 'string') return obj.output;
+      if (typeof obj.output_text === 'string') return obj.output_text;
+      if (typeof obj.text === 'string') return obj.text;
+      if (Array.isArray(obj.parts)) return obj.parts.map((p: any) => p?.text ?? '').join('');
+      if (Array.isArray(obj.candidates) && obj.candidates[0]) {
+        const c = obj.candidates[0];
+        if (typeof c.content === 'string') return c.content;
+        if (Array.isArray(c.parts)) return c.parts.map((p: any) => p?.text ?? '').join('');
+        if (typeof c.output === 'string') return c.output;
+      }
+      if (Array.isArray(obj.output) && typeof obj.output[0]?.content === 'string') return obj.output[0].content;
+      if (Array.isArray(obj.generations) && typeof obj.generations[0]?.text === 'string') return obj.generations[0].text;
+      if (Array.isArray(obj.choices) && typeof obj.choices[0]?.message?.content === 'string') return obj.choices[0].message.content;
+      return null;
+    };
+
+    let candidate: string | null = null;
+
+    if (typeof response === 'string') {
+      // The response may itself be a JSON string containing nested shapes (e.g. { parts: [...] }) so try parsing.
+      try {
+        const parsed = JSON.parse(response);
+        candidate = extractFromObject(parsed) ?? response;
+      } catch {
+        candidate = response;
+      }
+    } else {
+      candidate = extractFromObject(response) ?? (() => {
+        try { return JSON.stringify(response); } catch { return String(response); }
+      })();
+    }
+
+    // If the LLM wrapped the JSON inside markdown code fences, extract the inner block.
+    const fenceMatch = candidate.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+    if (fenceMatch && fenceMatch[1]) {
+      candidate = fenceMatch[1].trim();
+    }
+
+    // If the candidate is a quoted JSON string (e.g. "[...]"), try to unquote/unescape it.
+    if ((candidate.startsWith('"') && candidate.endsWith('"')) || (candidate.startsWith("'") && candidate.endsWith("'"))) {
+      try { candidate = JSON.parse(candidate); } catch { candidate = candidate.slice(1, -1); }
+    }
+
+    // Ensure we always return a string. If candidate is an object/array, stringify it.
+    if (candidate === null || candidate === undefined) return '';
+    if (typeof candidate !== 'string') {
+      try { return JSON.stringify(candidate); } catch { return String(candidate); }
+    }
+
+    return candidate;
   }
 }
