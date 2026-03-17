@@ -38,8 +38,46 @@ export class DimsController {
     },
   })
   @UseInterceptors(FileInterceptor('file'))
-  async digitalizarFactura(@UploadedFile() file: Express.Multer.File) {
-    return this.digitalizarFacturaUseCase.execute(file.buffer, file.mimetype);
+  async digitalizarFactura(@UploadedFile() file: Express.Multer.File, @Query('debug') debug?: string) {
+    try {
+      const debugFlag = debug === 'true';
+      return await this.digitalizarFacturaUseCase.execute(file.buffer, file.mimetype, debugFlag);
+    } catch (err) {
+      return {
+        proveedor: 'Error en extracción',
+        valorTotal: 0,
+        productos: [{ descripcion: (err as Error)?.message || 'No se pudo extraer data', cantidad: 0, valorUnitario: 0, valorTotal: 0 }]
+      };
+    }
+  }
+
+  @Post('digitalizar-factura-imagen')
+  @ApiOperation({ summary: 'HU-003b: Digitalización de Facturas (solo imagen)' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+        },
+      },
+    },
+  })
+  @UseInterceptors(FileInterceptor('file'))
+  async digitalizarFacturaImagen(@UploadedFile() file: Express.Multer.File, @Query('debug') debug?: string) {
+    try {
+      const debugFlag = debug === 'true';
+      // Delegate to the same use case; the service will handle OCR for images
+      return await this.digitalizarFacturaUseCase.execute(file.buffer, file.mimetype, debugFlag);
+    } catch (err) {
+      return {
+        proveedor: 'Error en extracción',
+        valorTotal: 0,
+        productos: [{ descripcion: (err as Error)?.message || 'No se pudo extraer data', cantidad: 0, valorUnitario: 0, valorTotal: 0 }]
+      };
+    }
   }
 
   @Post('buscar-subpartidas-pdf')
@@ -58,6 +96,10 @@ export class DimsController {
   })
   @UseInterceptors(FileInterceptor('file'))
   async buscarDesdePdf(@UploadedFile() file: Express.Multer.File) {
-    return this.buscarSubpartidasDesdePdfUseCase.execute(file.buffer, file.mimetype);
+    try {
+      return await this.buscarSubpartidasDesdePdfUseCase.execute(file.buffer, file.mimetype);
+    } catch (err) {
+      return { error: 'Error procesando PDF', message: (err as Error)?.message };
+    }
   }
 }

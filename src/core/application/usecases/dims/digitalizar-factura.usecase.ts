@@ -1,6 +1,6 @@
 import { Injectable, Inject } from '@nestjs/common';
-import { AI_SERVICE, AIService } from '../../../../core/domain/ports/outbound/ai.service';
-import { Factura } from '../../../../core/domain/models/factura';
+import { AI_SERVICE, AIService } from '../../../domain/ports/outbound/ai.service';
+import { Factura } from '../../../domain/models/factura';
 
 @Injectable()
 export class DigitalizarFacturaUseCase {
@@ -9,7 +9,7 @@ export class DigitalizarFacturaUseCase {
     private readonly aiService: AIService,
   ) {}
 
-  async execute(fileBuffer: Buffer, mimeType: string): Promise<Partial<Factura>> {
-    return this.aiService.extraerDatosFactura(fileBuffer, mimeType);
+  async execute(fileBuffer: Buffer, mimeType: string, debug?: boolean): Promise<Partial<Factura>> {
+    return this.aiService.extraerDatosFactura(fileBuffer, mimeType, debug);
   }
 }
