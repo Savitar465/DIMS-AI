@@ -26,6 +26,8 @@ class GeminiClient {
     this.modelName = modelName;
   }
 
+  
+
   async invoke(
     prompt: string,
     inlineData?: { mime_type: string; data: string },
@@ -671,6 +673,184 @@ INSTRUCCIÓN IMPORTANTE: Genera únicamente un JSON válido con la siguiente est
         ],
       };
     }
+  }
+
+  async clasificarProductosDesdeFactura(fileBuffer: Buffer, mimeType: string, debug?: boolean): Promise<Partial<Factura> & { debug?: any }> {
+    let text: string | undefined;
+    let imageBase64: string | undefined;
+
+    if (mimeType === 'application/pdf') {
+      const data = await pdf(fileBuffer);
+      text = data.text;
+    } else if (/^image\//.test(mimeType)) {
+      imageBase64 = fileBuffer.toString('base64');
+    } else {
+      text = fileBuffer.toString('utf-8');
+    }
+
+    const subpartidasDisponibles = await this.subpartidaRepository.findAll();
+
+    const parser = StructuredOutputParser.fromZodSchema(
+      z.object({
+        proveedor: z.string().nullable(),
+        fecha: z.string().nullable(),
+        moneda: z.string().nullable(),
+        valorTotal: z.number().nullable(),
+        productos: z.array(
+          z.object({
+            descripcion: z.string(),
+            cantidad: z.number().nullable(),
+            valorUnitario: z.number().nullable(),
+            valorTotal: z.number().nullable(),
+            subpartida: z.union([
+              z.object({ id: z.string().optional(), codigo: z.string().optional(), razon: z.string().optional() }),
+              z.literal('sin clasificacion'),
+            ]),
+          }),
+        ),
+      }),
+    );
+
+    const template = `Eres un experto en comercio exterior. Vas a recibir una factura (imagen o texto) y una lista de subpartidas disponibles. Extrae los datos de la factura y la lista de productos, y para cada producto asigna la subpartida más adecuada. Si no hay coincidencia, usa exactamente "sin clasificacion". Devuelve SOLO un JSON válido según las instrucciones de formato.\n\nSubpartidas: {subpartidas}\n\n{format_instructions}`;
+
+    const prompt = new PromptTemplate({
+      template,
+      inputVariables: ['subpartidas', 'text'],
+      partialVariables: { format_instructions: parser.getFormatInstructions() },
+    });
+
+    const input = await prompt.format({ subpartidas: JSON.stringify(subpartidasDisponibles), text: text ?? '' });
+
+    try {
+      let response: any;
+      if (imageBase64 && this.model instanceof GeminiClient) {
+        response = await this.model.invoke(input, { mime_type: mimeType, data: imageBase64 });
+      } else {
+        response = await this.model.invoke(input);
+      }
+
+      const contentStr = this.normalizeModelResponse(response);
+      if (debug) console.debug('[AI classify] normalized response:', contentStr?.slice(0, 2000));
+
+      const sanitized = this.sanitizeModelJSON(contentStr);
+      try {
+        const parsed = await parser.parse(sanitized);
+        return parsed as Partial<Factura> & { debug?: any };
+      } catch (err) {
+        try {
+          const cleaned = this.cleanJSONString(sanitized);
+          const parsed = JSON.parse(cleaned);
+          if (parsed && typeof parsed === 'object') return parsed as Partial<Factura> & { debug?: any };
+        } catch (e) {
+          // Try extracting/cleaning an array using the dedicated sanitizer
+          try {
+            let arrSan = this.sanitizeModelJSONArray(contentStr);
+            if (arrSan && arrSan.trim().startsWith('[')) {
+              try {
+                arrSan = this.cleanJSONString(arrSan);
+                const parsedArr = JSON.parse(arrSan);
+                if (Array.isArray(parsedArr)) return { proveedor: null, fecha: null, moneda: null, valorTotal: null, productos: parsedArr } as Partial<Factura> & { debug?: any };
+              } catch (e2) {
+                // Try additional cleanup: collapse multiple backslashes then parse
+                try {
+                  const cleaned2 = arrSan.replace(/\\\\/g, '\\');
+                  const parsedArr2 = JSON.parse(cleaned2);
+                  if (Array.isArray(parsedArr2)) return { proveedor: null, fecha: null, moneda: null, valorTotal: null, productos: parsedArr2 } as Partial<Factura> & { debug?: any };
+                } catch (e3) {
+                  console.warn('[AI classify] fallback parse failed after cleaning:', e3);
+                }
+              }
+            }
+          } catch (ee) {
+            console.warn('[AI classify] array sanitization failed:', ee);
+          }
+        }
+      }
+
+      // Final attempt: try a loose parser that extracts values with regex when JSON.parse fails
+      try {
+        const loose = this.parseFacturaLoose(contentStr);
+        if (loose) return loose as Partial<Factura> & { debug?: any };
+      } catch (ee) {
+        console.warn('[AI classify] loose parse failed:', ee);
+      }
+
+      return { proveedor: null, fecha: null, moneda: null, valorTotal: null, productos: [] };
+    } catch (error) {
+      console.error('[AI classify] Error calling LLM:', error);
+      return { proveedor: null, fecha: null, moneda: null, valorTotal: null, productos: [] };
+    }
+  }
+
+  // Very forgiving parser: extracts factura fields and products from pretty-printed JSON-like text
+  private parseFacturaLoose(text: string): Partial<Factura> | null {
+    if (!text || typeof text !== 'string') return null;
+    // Try to find proveedor, fecha, moneda, valorTotal
+    const getString = (key: string) => {
+      const re = new RegExp(`"${key}"\s*:\s*"([^"]*)"`, 'i');
+      const m = text.match(re);
+      return m ? m[1] : null;
+    };
+    const getNumber = (key: string) => {
+      const re = new RegExp(`"${key}"\s*:\s*([0-9]+(?:\.[0-9]+)?)`, 'i');
+      const m = text.match(re);
+      return m ? Number(m[1]) : null;
+    };
+
+    const proveedor = getString('proveedor');
+    const fecha = getString('fecha');
+    const moneda = getString('moneda') || getString('currency');
+    const valorTotal = getNumber('valorTotal');
+
+    // Extract products block
+    const productsBlockMatch = text.match(/"productos"\s*:\s*\[([\s\S]*?)\]\s*,?/i);
+    const productos: any[] = [];
+    if (productsBlockMatch && productsBlockMatch[1]) {
+      const inner = productsBlockMatch[1];
+      // Match individual product objects { ... }
+      const objRe = /\{([\s\S]*?)\}(?:,|$)/g;
+      let m: RegExpExecArray | null;
+      while ((m = objRe.exec(inner))) {
+        const objText = m[1];
+        const descripcionMatch = objText.match(/"descripcion"\s*:\s*"([^"]*)"/i);
+        const cantidadMatch = objText.match(/"cantidad"\s*:\s*([0-9]+)/i);
+        const vuMatch = objText.match(/"valorUnitario"\s*:\s*([0-9]+(?:\.[0-9]+)?)/i);
+        const vtMatch = objText.match(/"valorTotal"\s*:\s*([0-9]+(?:\.[0-9]+)?)/i);
+        const subMatch = objText.match(/"subpartida"\s*:\s*(?:"([^"]*)"|([A-Za-z0-9_\- ]+))/i);
+        const descripcion = descripcionMatch ? descripcionMatch[1] : '';
+        const cantidad = cantidadMatch ? Number(cantidadMatch[1]) : null;
+        const valorUnitario = vuMatch ? Number(vuMatch[1]) : null;
+        const valorTotal = vtMatch ? Number(vtMatch[1]) : null;
+        let subpartida: any = null;
+        if (subMatch) {
+          subpartida = subMatch[1] ?? subMatch[2] ?? null;
+        }
+        productos.push({ descripcion, cantidad, valorUnitario, valorTotal, subpartida });
+      }
+    }
+
+    if (!proveedor && !fecha && productos.length === 0) return null;
+    return { proveedor: proveedor ?? null, fecha: fecha ?? null, moneda: moneda ?? null, valorTotal: valorTotal ?? null, productos };
+  }
+
+  // Clean a JSON-like string to increase the chance JSON.parse will succeed.
+  // - normalize smart quotes to straight quotes
+  // - remove control characters except newlines
+  // - collapse repeated backslashes
+  // - remove trailing commas before } or ]
+  private cleanJSONString(raw: string): string {
+    if (!raw || typeof raw !== 'string') return raw;
+    let s = raw;
+    // Normalize smart quotes
+    s = s.replace(/[\u2018\u2019\u201A\u201B\u2032\u2035]/g, "'");
+    s = s.replace(/[\u201C\u201D\u201E\u201F\u2033\u2036]/g, '"');
+    // Remove control chars except newline and tab
+    s = s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
+    // Collapse multiple backslashes
+    s = s.replace(/\\\\+/g, '\\');
+    // Remove trailing commas before } or ]
+    s = s.replace(/,\s*(?=[}\]])/g, '');
+    return s.trim();
   }
 
   // Normalize and extract plain text from various LLM client response shapes.

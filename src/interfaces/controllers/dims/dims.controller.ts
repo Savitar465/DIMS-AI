@@ -4,6 +4,7 @@ import { ApiTags, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
 import { BuscarSubpartidasUseCase } from 'src/core/application/usecases/dims/buscar-subpartidas.usecase';
 import { BuscarSubpartidasDesdePdfUseCase } from 'src/core/application/usecases/dims/buscar-subpartidas-desde-pdf.usecase';
 import { DigitalizarFacturaUseCase } from 'src/core/application/usecases/dims/digitalizar-factura.usecase';
+import { ClasificarFacturaUseCase } from 'src/core/application/usecases/dims/clasificar-factura.usecase';
 
 @ApiTags('DIMS - Automatización con IA')
 @Controller('dims')
@@ -12,6 +13,7 @@ export class DimsController {
     private readonly buscarSubpartidasUseCase: BuscarSubpartidasUseCase,
     private readonly buscarSubpartidasDesdePdfUseCase: BuscarSubpartidasDesdePdfUseCase,
     private readonly digitalizarFacturaUseCase: DigitalizarFacturaUseCase,
+    private readonly clasificarFacturaUseCase: ClasificarFacturaUseCase,
   ) {}
 
   @Get('subpartidas')
@@ -81,6 +83,28 @@ export class DimsController {
         valorTotal: 0,
         productos: [{ descripcion: (err as Error)?.message || 'No se pudo extraer data', cantidad: 0, valorUnitario: 0, valorTotal: 0 }]
       };
+    }
+  }
+
+  @Post('clasificar-factura')
+  @ApiOperation({ summary: 'HU-004: Clasificar productos de una factura con subpartidas arancelarias' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', format: 'binary' },
+      },
+    },
+  })
+  @UseInterceptors(FileInterceptor('file'))
+  async clasificarFactura(@UploadedFile() file: Express.Multer.File, @Query('debug') debug?: string) {
+    try {
+      const debugFlag = debug === 'true';
+      // Delegate classification to the new use case
+      return await this.clasificarFacturaUseCase.execute(file.buffer, file.mimetype, debugFlag);
+    } catch (err) {
+      return { error: 'Error clasificando factura', message: (err as Error)?.message };
     }
   }
 
