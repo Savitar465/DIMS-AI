@@ -1,6 +1,6 @@
 import { Injectable, Inject } from '@nestjs/common';
-import { AI_SERVICE, AIService } from '../../../../core/domain/ports/outbound/ai.service';
-import { Subpartida } from '../../../../core/domain/models/subpartida';
+import { AI_SERVICE, AIService } from '../../../domain/ports/outbound/ai.service';
+import { Subpartida } from '../../../domain/models/subpartida';
 
 @Injectable()
 export class BuscarSubpartidasUseCase {
@@ -10,6 +10,13 @@ export class BuscarSubpartidasUseCase {
   ) {}
 
   async execute(termino: string, linea?: string): Promise<Subpartida[]> {
-    return this.aiService.buscarSubpartidas(termino, { linea });
+    try {
+      const result = await this.aiService.buscarSubpartidas(termino, { linea });
+      if (Array.isArray(result)) return result as Subpartida[];
+      return [];
+    } catch (err) {
+      console.error('[BuscarSubpartidasUseCase] Error calling AI service:', err);
+      return [];
+    }
   }
 }

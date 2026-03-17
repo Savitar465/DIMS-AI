@@ -292,7 +292,10 @@ class GeminiClient {
       }
     }
 
-    throw lastErr ?? new Error('Gemini API: all attempts failed');
+    // Instead of throwing, log the error and return an empty content result so
+    // higher-level code can perform graceful fallbacks without causing unhandled exceptions.
+    console.error('GeminiClient: all attempts failed', lastErr);
+    return { content: '' };
   }
 }
 
@@ -356,13 +359,20 @@ export class LangChainAIService implements AIService {
     );
 
     const prompt = new PromptTemplate({
-      template: `Eres un experto en comercio exterior. Tu tarea es encontrar las subpartidas arancelarias más adecuadas para el siguiente producto:
-      Producto: "{descripcion}"
+      template: `Eres un experto en comercio exterior. Tu tarea es encontrar las subpartidas arancelarias más adecuadas para el siguiente producto.
+Producto: "{descripcion}"
 
-      Subpartidas disponibles:
-      {subpartidas}
-      
-      Si no encuentras una coincidencia exacta, devuelve las más cercanas.`,
+Subpartidas disponibles:
+{subpartidas}
+
+INSTRUCCIONES IMPORTANTES:
+- Devuelve ÚNICAMENTE un JSON válido y nada más.
+- El JSON debe ser un ARRAY de objetos con la siguiente forma: [{{ "id": "123456", "razon": "Texto explicativo de por qué aplica" }} , ...]
+- Si no hay coincidencias exactas, incluye las subpartidas más cercanas.
+
+Usa las siguientes instrucciones de formato para asegurar la salida JSON:
+{format_instructions}
+`,
       inputVariables: ['descripcion', 'linea', 'subpartidas'],
       partialVariables: { format_instructions: parser.getFormatInstructions() },
     });
@@ -377,42 +387,79 @@ export class LangChainAIService implements AIService {
       // Call the model (no inline image for this use-case)
       const response = await this.model.invoke(input);
       const contentStr = this.normalizeModelResponse(response);
-      console.log(
-        `[AI Search] Normalized LLM response length: ${contentStr?.length}`,
-      );
-      console.log(
-        `[AI Search] Normalized LLM response (truncated): ${contentStr?.slice(0, 1000)}`,
-      );
-      // let output: any;
-      // try {
-      //   output = await parser.parse(conntentStr);
-      // } catch (parseErr) {
-      //   console.warn('[AI Search] StructuredOutputParser.parse failed, attempting JSON-extraction fallback');
-      //   try {
-      //     // Try to extract a JSON array from the text and parse it
-      //     const arrayMatch = contentStr.match(/\[[\s\S]*\]/);
-      //     if (arrayMatch) {
-      //       const parsedArray = JSON.parse(arrayMatch[0]);
-      //       if (Array.isArray(parsedArray)) output = parsedArray;
-      //     }
-      //   } catch (e) {
-      //     console.warn('[AI Search] JSON-extraction fallback failed:', e);
-      //   }
-      //
-      //   if (!output) throw parseErr;
-      // }
+      console.log(`[AI Search] Normalized LLM response length: ${contentStr?.length}`);
+      console.log(`[AI Search] Normalized LLM response (truncated): ${contentStr?.slice(0, 1000)}`);
 
-      // Mapear los resultados del LLM de vuelta a los objetos completos de subpartida
+      // Try to parse the response using the StructuredOutputParser (preferred)
+      let parsed: any = null;
+      try {
+        const sanitized = this.sanitizeModelJSONArray(contentStr);
+        parsed = await parser.parse(sanitized);
+      } catch (parseErr) {
+        console.warn('[AI Search] StructuredOutputParser.parse failed, attempting JSON-extraction fallback');
+        try {
+          // Sanitize the model response first (removes code fences, unescapes sequences)
+          const sanitized = this.sanitizeModelJSONArray(contentStr);
 
-      return [
-        {
-          id: '1',
-          descripcion: contentStr,
-          codigo: 'some code',
-          linea: 'otra',
-          arancel: 123,
-        },
-      ];
+          // If sanitized already looks like a JSON array, try parsing directly
+          const sTrim = (sanitized ?? '').trim();
+          if (sTrim.startsWith('[')) {
+            try {
+              const parsedArray = JSON.parse(sTrim);
+              if (Array.isArray(parsedArray)) parsed = parsedArray;
+            } catch (e) {
+              // fallthrough to bracket-extraction below
+            }
+          }
+
+          if (!parsed) {
+            // Find first '[' and last ']' in sanitized and try to extract
+            const first = sanitized.indexOf('[');
+            const last = sanitized.lastIndexOf(']');
+            if (first !== -1 && last !== -1 && last > first) {
+              let arrCandidate = sanitized.slice(first, last + 1).trim();
+
+              // Remove surrounding quotes if present
+              if ((arrCandidate.startsWith('"') && arrCandidate.endsWith('"')) || (arrCandidate.startsWith("'") && arrCandidate.endsWith("'"))) {
+                arrCandidate = arrCandidate.slice(1, -1).trim();
+              }
+
+              // Repeatedly unescape common sequences to handle double-escaped JSON
+              let prev: string | null = null;
+              let attempts = 0;
+              while (arrCandidate !== prev && attempts < 6) {
+                prev = arrCandidate;
+                arrCandidate = arrCandidate
+                  .replace(/\\r/g, '')
+                  .replace(/\\n/g, '\n')
+                  .replace(/\\t/g, ' ')
+                  .replace(/\\"/g, '"')
+                  .replace(/\\'/g, "'")
+                  .replace(/\\\\/g, '\\')
+                  .trim();
+                attempts++;
+              }
+
+              try {
+                const parsedArray = JSON.parse(arrCandidate);
+                if (Array.isArray(parsedArray)) parsed = parsedArray;
+              } catch (e) {
+                console.warn('[AI Search] JSON-extraction fallback failed parsing array candidate:', e);
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('[AI Search] JSON-extraction fallback failed:', e);
+        }
+      }
+
+      if (Array.isArray(parsed)) {
+        // Ensure result is a plain array of objects that can be serialized as JSON
+        return parsed;
+      }
+
+      // Fallback: return repository search results if LLM parsing failed
+      return this.subpartidaRepository.search(descripcion, contexto?.linea);
     } catch (error) {
       console.error('[AI Search] Error calling LLM:', error);
       // Fallback a búsqueda simple si el LLM falla
@@ -746,17 +793,58 @@ INSTRUCCIÓN IMPORTANTE: Genera únicamente un JSON válido con la siguiente est
     let attempts = 0;
     while (candidate !== prev && attempts < 6) {
       prev = candidate;
+      // Normalize double-escaped sequences by collapsing double backslashes to single
       candidate = candidate
         .replace(/\\r/g, '')
         .replace(/\\n/g, '\n')
         .replace(/\\t/g, ' ')
-        .replace(/\\"/g, '"')
-        .replace(/\\'/g, "'")
+        // Do NOT replace escaped quotes (\") -> '"' here; keep escapes for valid JSON
         .replace(/\\\\/g, '\\')
         .trim();
       attempts++;
     }
 
     return candidate;
+  }
+
+  // Sanitize raw LLM output but preserve JSON arrays when present.
+  private sanitizeModelJSONArray(raw: string): string {
+    if (!raw || typeof raw !== 'string') return raw;
+
+    // If wrapped in markdown code fences, extract inner content
+    const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+    let candidate = fenceMatch && fenceMatch[1] ? fenceMatch[1] : raw;
+
+    // Try to extract a full array first
+    const firstArr = candidate.indexOf('[');
+    const lastArr = candidate.lastIndexOf(']');
+    if (firstArr !== -1 && lastArr !== -1 && lastArr > firstArr) {
+      let arr = candidate.slice(firstArr, lastArr + 1).trim();
+
+      // Remove surrounding quotes
+      if ((arr.startsWith('"') && arr.endsWith('"')) || (arr.startsWith("'") && arr.endsWith("'"))) {
+        arr = arr.slice(1, -1).trim();
+      }
+
+      // Unescape common sequences repeatedly
+      let prev: string | null = null;
+      let attempts = 0;
+      while (arr !== prev && attempts < 6) {
+        prev = arr;
+        arr = arr
+          .replace(/\\r/g, '')
+          .replace(/\\n/g, '\n')
+          .replace(/\\t/g, ' ')
+          // Keep escaped quotes intact; only collapse double backslashes
+          .replace(/\\\\/g, '\\')
+          .trim();
+        attempts++;
+      }
+
+      return arr;
+    }
+
+    // Fallback to object-sanitizer
+    return this.sanitizeModelJSON(raw);
   }
 }

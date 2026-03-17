@@ -20,7 +20,11 @@ export class DimsController {
     @Query('q') query: string,
     @Query('linea') linea?: string,
   ) {
-    return this.buscarSubpartidasUseCase.execute(query, linea);
+    try {
+      return await this.buscarSubpartidasUseCase.execute(query, linea);
+    } catch (err) {
+      return { error: 'Error buscando subpartidas', message: (err as Error)?.message };
+    }
   }
 
   @Post('digitalizar-factura')

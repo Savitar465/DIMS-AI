@@ -14,12 +14,29 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const status = exception instanceof HttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
     const message = exception instanceof HttpException ? exception.getResponse() : exception;
 
+    // Safely stringify message to avoid throws when message contains circular refs
+    let messageStr: any;
+    if (typeof message === this.OBJECT) {
+      try {
+        messageStr = JSON.stringify(message);
+      } catch {
+        try {
+          // Fallback to a best-effort string conversion
+          messageStr = String(message);
+        } catch {
+          messageStr = '[unserializable error]';
+        }
+      }
+    } else {
+      messageStr = message;
+    }
+
     const logMessage = {
       timestamp: new Date().toISOString(),
       path: request.url,
       method: request.method,
       status,
-      message: typeof message === this.OBJECT ? JSON.stringify(message) : message
+      message: messageStr,
     };
 
     if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {

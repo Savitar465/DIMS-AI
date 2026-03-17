@@ -26,7 +26,12 @@ export class LoggingInterceptor implements NestInterceptor {
             message: 'Request completed successfully',
             responseTime: `${Date.now() - now}ms`
           };
-          this.logger.log(logMessage);
+          try {
+            this.logger.log(logMessage);
+          } catch (e) {
+            // Prevent logging errors from bubbling and affecting HTTP response lifecycle
+            try { console.error('LoggingInterceptor: logger.log failed', e); } catch {}
+          }
         })
       );
   }
