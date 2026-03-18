@@ -17,6 +17,7 @@ async function bootstrap() {
     .addBearerAuth()
     .build();
   const document = SwaggerModule.createDocument(app, config);
+  app.enableCors({ origin: true, credentials: true });
   app.setGlobalPrefix('api');
   SwaggerModule.setup('docs', app, document);
   app.useLogger(app.get(Logger));
@@ -30,7 +31,7 @@ async function bootstrap() {
     forbidNonWhitelisted: true,
   }));
   // Enable CORS and accept all origins (disables origin validation)
-  app.enableCors({ origin: true, credentials: true });
+
   await app.listen(3001);
   if (module.hot) {
     module.hot.accept();
