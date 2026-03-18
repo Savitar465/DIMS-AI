@@ -17,7 +17,8 @@ async function bootstrap() {
     .addBearerAuth()
     .build();
   const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup('api', app, document);
+  app.setGlobalPrefix('api');
+  SwaggerModule.setup('docs', app, document);
   app.useLogger(app.get(Logger));
   const logger = app.get(Logger);
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
