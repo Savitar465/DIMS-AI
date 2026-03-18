@@ -711,7 +711,23 @@ INSTRUCCIÓN IMPORTANTE: Genera únicamente un JSON válido con la siguiente est
       }),
     );
 
-    const template = `Eres un experto en comercio exterior. Vas a recibir una factura (imagen o texto) y una lista de subpartidas disponibles. Extrae los datos de la factura y la lista de productos, y para cada producto asigna la subpartida más adecuada. Si no hay coincidencia, usa exactamente "sin clasificacion". Devuelve SOLO un JSON válido según las instrucciones de formato.\n\nSubpartidas: {subpartidas}\n\n{format_instructions}`;
+    const template = `Eres un experto en comercio exterior. Tu tarea es:
+1. Analizar una factura (imagen o texto)
+2. Extraer los datos de la factura: proveedor, fecha, moneda, valorTotal
+3. Listar todos los productos con: descripcion, cantidad, valorUnitario, valorTotal
+4. Clasificar cada producto con su subpartida arancelaria más adecuada de la lista disponible
+
+INSTRUCCIÓN CRÍTICA: 
+- Devuelve ÚNICAMENTE un JSON válido, sin texto adicional, sin explicaciones, sin código de marcado.
+- El JSON debe ser parseable directamente por JSON.parse()
+- Si un producto no coincide con ninguna subpartida, usa exactamente "sin clasificacion"
+- NO incluyas caracteres especiales sin escapar dentro de strings JSON
+- NO uses saltos de línea en el JSON, usa espacios en su lugar
+
+Subpartidas disponibles:
+{subpartidas}
+
+{format_instructions}`;
 
     const prompt = new PromptTemplate({
       template,
@@ -732,49 +748,44 @@ INSTRUCCIÓN IMPORTANTE: Genera únicamente un JSON válido con la siguiente est
       const contentStr = this.normalizeModelResponse(response);
       if (debug) console.debug('[AI classify] normalized response:', contentStr?.slice(0, 2000));
 
-      const sanitized = this.sanitizeModelJSON(contentStr);
+      // Try multiple parsing strategies
+      let parsed: any = null;
+
+      // Strategy 1: Try the loose regex-based parser FIRST (best for handling messy JSON)
       try {
-        const parsed = await parser.parse(sanitized);
-        return parsed as Partial<Factura> & { debug?: any };
-      } catch (err) {
+        const looseParsed = this.parseFacturaLoose(contentStr);
+        if (looseParsed && looseParsed.productos && looseParsed.productos.length > 0) {
+          parsed = looseParsed;
+          if (debug) console.debug('[AI classify] Successfully parsed using loose parser');
+        }
+      } catch (e) {
+        if (debug) console.debug('[AI classify] Loose parser failed, trying other strategies');
+      }
+
+      // Strategy 2: If loose parser didn't work, try robust JSON parsing
+      if (!parsed) {
+        parsed = this.tryParseJSON(contentStr);
+        if (parsed && debug) console.debug('[AI classify] Successfully parsed using tryParseJSON');
+      }
+
+      // Strategy 3: Try the structured parser as final attempt
+      if (!parsed) {
         try {
-          const cleaned = this.cleanJSONString(sanitized);
-          const parsed = JSON.parse(cleaned);
-          if (parsed && typeof parsed === 'object') return parsed as Partial<Factura> & { debug?: any };
-        } catch (e) {
-          // Try extracting/cleaning an array using the dedicated sanitizer
-          try {
-            let arrSan = this.sanitizeModelJSONArray(contentStr);
-            if (arrSan && arrSan.trim().startsWith('[')) {
-              try {
-                arrSan = this.cleanJSONString(arrSan);
-                const parsedArr = JSON.parse(arrSan);
-                if (Array.isArray(parsedArr)) return { proveedor: null, fecha: null, moneda: null, valorTotal: null, productos: parsedArr } as Partial<Factura> & { debug?: any };
-              } catch (e2) {
-                // Try additional cleanup: collapse multiple backslashes then parse
-                try {
-                  const cleaned2 = arrSan.replace(/\\\\/g, '\\');
-                  const parsedArr2 = JSON.parse(cleaned2);
-                  if (Array.isArray(parsedArr2)) return { proveedor: null, fecha: null, moneda: null, valorTotal: null, productos: parsedArr2 } as Partial<Factura> & { debug?: any };
-                } catch (e3) {
-                  console.warn('[AI classify] fallback parse failed after cleaning:', e3);
-                }
-              }
-            }
-          } catch (ee) {
-            console.warn('[AI classify] array sanitization failed:', ee);
-          }
+          const sanitized = this.sanitizeModelJSON(contentStr);
+          parsed = await parser.parse(sanitized);
+          if (debug) console.debug('[AI classify] Successfully parsed using StructuredOutputParser');
+        } catch (err) {
+          if (debug) console.debug('[AI classify] StructuredOutputParser failed:', err);
         }
       }
 
-      // Final attempt: try a loose parser that extracts values with regex when JSON.parse fails
-      try {
-        const loose = this.parseFacturaLoose(contentStr);
-        if (loose) return loose as Partial<Factura> & { debug?: any };
-      } catch (ee) {
-        console.warn('[AI classify] loose parse failed:', ee);
+      // If we got a valid parsed object, return it
+      if (parsed && typeof parsed === 'object') {
+        return parsed as Partial<Factura> & { debug?: any };
       }
 
+      // Final fallback: return empty result
+      if (debug) console.warn('[AI classify] All parsing strategies failed, returning empty result');
       return { proveedor: null, fecha: null, moneda: null, valorTotal: null, productos: [] };
     } catch (error) {
       console.error('[AI classify] Error calling LLM:', error);
@@ -803,12 +814,12 @@ INSTRUCCIÓN IMPORTANTE: Genera únicamente un JSON válido con la siguiente est
     const valorTotal = getNumber('valorTotal');
 
     // Extract products block
-    const productsBlockMatch = text.match(/"productos"\s*:\s*\[([\s\S]*?)\]\s*,?/i);
+    const productsBlockMatch = text.match(/"productos"\s*:\s*\[([\s\S]*?)]/i);
     const productos: any[] = [];
     if (productsBlockMatch && productsBlockMatch[1]) {
       const inner = productsBlockMatch[1];
       // Match individual product objects { ... }
-      const objRe = /\{([\s\S]*?)\}(?:,|$)/g;
+      const objRe = /{([\s\S]*?)}/g;
       let m: RegExpExecArray | null;
       while ((m = objRe.exec(inner))) {
         const objText = m[1];
@@ -838,18 +849,39 @@ INSTRUCCIÓN IMPORTANTE: Genera únicamente un JSON válido con la siguiente est
   // - remove control characters except newlines
   // - collapse repeated backslashes
   // - remove trailing commas before } or ]
+  // - handle escaped newlines and quotes in JSON strings
   private cleanJSONString(raw: string): string {
     if (!raw || typeof raw !== 'string') return raw;
     let s = raw;
+    
     // Normalize smart quotes
     s = s.replace(/[\u2018\u2019\u201A\u201B\u2032\u2035]/g, "'");
     s = s.replace(/[\u201C\u201D\u201E\u201F\u2033\u2036]/g, '"');
+    
     // Remove control chars except newline and tab
     s = s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
-    // Collapse multiple backslashes
-    s = s.replace(/\\\\+/g, '\\');
+    
+    // Handle literal newlines in JSON strings: replace actual newlines with spaces
+    s = s.replace(/[\r\n]+/g, ' ');
+    
+    // Handle double-escaped sequences carefully: \\n -> \n in raw form
+    // But we need JSON-valid escape sequences in the final string
+    let prev: string | null = null;
+    let attempts = 0;
+    while (s !== prev && attempts < 4) {
+      prev = s;
+      // Collapse excessive backslashes: \\\\ -> \\
+      s = s.replace(/\\\\\\\\/g, '\\\\');  
+      attempts++;
+    }
+    
     // Remove trailing commas before } or ]
     s = s.replace(/,\s*(?=[}\]])/g, '');
+    
+    // Fix common JSON syntax issues
+    // Remove multiple spaces between tokens but preserve single spaces
+    s = s.replace(/\s{2,}/g, ' ');
+    
     return s.trim();
   }
 
@@ -960,7 +992,7 @@ INSTRUCCIÓN IMPORTANTE: Genera únicamente un JSON válido con la siguiente est
 
     candidate = candidate.trim();
 
-    // Remove surrounding quotes
+    // Remove surrounding quotes (handles both single and double)
     if (
       (candidate.startsWith('"') && candidate.endsWith('"')) ||
       (candidate.startsWith("'") && candidate.endsWith("'"))
@@ -968,19 +1000,24 @@ INSTRUCCIÓN IMPORTANTE: Genera únicamente un JSON válido con la siguiente est
       candidate = candidate.slice(1, -1).trim();
     }
 
-    // Unescape common sequences repeatedly in case of double-escaping
+    // Handle escaped newlines: convert \\n to actual newlines 
+    // But be careful with backslashes - only convert the standard JSON escape sequences
+    candidate = candidate
+      .replace(/\\n/g, ' ')    // Replace \n with space to avoid newlines in JSON
+      .replace(/\\r/g, ' ')    // Replace \r with space
+      .replace(/\\t/g, ' ');   // Replace \t with space
+
+    // Collapse consecutive spaces created by the above replacements
+    candidate = candidate.replace(/\s{2,}/g, ' ');
+
+    // Unescape double-escaped quotes in case of \\\" -> \"
     let prev: string | null = null;
     let attempts = 0;
-    while (candidate !== prev && attempts < 6) {
+    while (candidate !== prev && attempts < 5) {
       prev = candidate;
-      // Normalize double-escaped sequences by collapsing double backslashes to single
-      candidate = candidate
-        .replace(/\\r/g, '')
-        .replace(/\\n/g, '\n')
-        .replace(/\\t/g, ' ')
-        // Do NOT replace escaped quotes (\") -> '"' here; keep escapes for valid JSON
-        .replace(/\\\\/g, '\\')
-        .trim();
+      // Unescape double backslashes but preserve single backslashes before quotes
+      // Pattern: \\\\ -> \\ (reduce quadruple backslash to double)
+      candidate = candidate.replace(/\\\\\\\\/g, '\\\\').trim();
       attempts++;
     }
 
@@ -1026,5 +1063,84 @@ INSTRUCCIÓN IMPORTANTE: Genera únicamente un JSON válido con la siguiente est
 
     // Fallback to object-sanitizer
     return this.sanitizeModelJSON(raw);
+  }
+
+  // Robust JSON parser that tries multiple strategies
+  private tryParseJSON(text: string): any {
+    if (!text || typeof text !== 'string') return null;
+    
+    // Strategy 1: Direct parse
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      // Continue to next strategy
+    }
+
+    // Strategy 2: Clean and parse
+    try {
+      const cleaned = this.cleanJSONString(text);
+      return JSON.parse(cleaned);
+    } catch (e) {
+      // Continue to next strategy
+    }
+
+    // Strategy 3: Extract object using braces and clean
+    if (text.trim().startsWith('{')) {
+      try {
+        const firstIdx = text.indexOf('{');
+        const lastIdx = text.lastIndexOf('}');
+        if (firstIdx >= 0 && lastIdx > firstIdx) {
+          const extracted = text.substring(firstIdx, lastIdx + 1);
+          const cleaned = this.cleanJSONString(extracted);
+          return JSON.parse(cleaned);
+        }
+      } catch (e) {
+        // Continue to next strategy
+      }
+    }
+
+    // Strategy 4: Extract array using brackets and clean
+    if (text.trim().startsWith('[')) {
+      try {
+        const firstIdx = text.indexOf('[');
+        const lastIdx = text.lastIndexOf(']');
+        if (firstIdx >= 0 && lastIdx > firstIdx) {
+          const extracted = text.substring(firstIdx, lastIdx + 1);
+          const cleaned = this.cleanJSONString(extracted);
+          return JSON.parse(cleaned);
+        }
+      } catch (e) {
+        // Continue to next strategy
+      }
+    }
+
+    // Strategy 5: Try unescaping one level and parse
+    try {
+      // Single level unescape: \" -> ", \\ -> \, etc.
+      const unescaped = text
+        .replace(/\\"/g, '"')
+        .replace(/\\n/g, '\n')
+        .replace(/\\t/g, '\t')
+        .replace(/\\r/g, '\r')
+        .trim();
+      
+      if ((unescaped.startsWith('{') && unescaped.endsWith('}')) ||
+          (unescaped.startsWith('[') && unescaped.endsWith(']'))) {
+        return JSON.parse(unescaped);
+      }
+    } catch (e) {
+      // Continue to next strategy
+    }
+
+    // Strategy 6: Try the loose regex-based parser as last resort
+    try {
+      if (text.includes('"proveedor"')) {
+        return this.parseFacturaLoose(text);
+      }
+    } catch (e) {
+      // Continue
+    }
+
+    return null;
   }
 }
