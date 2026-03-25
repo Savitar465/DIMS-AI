@@ -26,6 +26,8 @@ class GeminiClient {
     this.modelName = modelName;
   }
 
+  
+
   async invoke(
     prompt: string,
     inlineData?: { mime_type: string; data: string },
@@ -673,6 +675,216 @@ INSTRUCCIÓN IMPORTANTE: Genera únicamente un JSON válido con la siguiente est
     }
   }
 
+  async clasificarProductosDesdeFactura(fileBuffer: Buffer, mimeType: string, debug?: boolean): Promise<Partial<Factura> & { debug?: any }> {
+    let text: string | undefined;
+    let imageBase64: string | undefined;
+
+    if (mimeType === 'application/pdf') {
+      const data = await pdf(fileBuffer);
+      text = data.text;
+    } else if (/^image\//.test(mimeType)) {
+      imageBase64 = fileBuffer.toString('base64');
+    } else {
+      text = fileBuffer.toString('utf-8');
+    }
+
+    const subpartidasDisponibles = await this.subpartidaRepository.findAll();
+
+    const parser = StructuredOutputParser.fromZodSchema(
+      z.object({
+        proveedor: z.string().nullable(),
+        fecha: z.string().nullable(),
+        moneda: z.string().nullable(),
+        valorTotal: z.number().nullable(),
+        productos: z.array(
+          z.object({
+            descripcion: z.string(),
+            cantidad: z.number().nullable(),
+            valorUnitario: z.number().nullable(),
+            valorTotal: z.number().nullable(),
+            subpartida: z.union([
+              z.object({ id: z.string().optional(), codigo: z.string().optional(), razon: z.string().optional() }),
+              z.literal('sin clasificacion'),
+            ]),
+          }),
+        ),
+      }),
+    );
+
+    const template = `Eres un experto en comercio exterior. Tu tarea es:
+1. Analizar una factura (imagen o texto)
+2. Extraer los datos de la factura: proveedor, fecha, moneda, valorTotal
+3. Listar todos los productos con: descripcion, cantidad, valorUnitario, valorTotal
+4. Clasificar cada producto con su subpartida arancelaria más adecuada de la lista disponible
+
+INSTRUCCIÓN CRÍTICA: 
+- Devuelve ÚNICAMENTE un JSON válido, sin texto adicional, sin explicaciones, sin código de marcado.
+- El JSON debe ser parseable directamente por JSON.parse()
+- Si un producto no coincide con ninguna subpartida, usa exactamente "sin clasificacion"
+- NO incluyas caracteres especiales sin escapar dentro de strings JSON
+- NO uses saltos de línea en el JSON, usa espacios en su lugar
+
+Subpartidas disponibles:
+{subpartidas}
+
+{format_instructions}`;
+
+    const prompt = new PromptTemplate({
+      template,
+      inputVariables: ['subpartidas', 'text'],
+      partialVariables: { format_instructions: parser.getFormatInstructions() },
+    });
+
+    const input = await prompt.format({ subpartidas: JSON.stringify(subpartidasDisponibles), text: text ?? '' });
+
+    try {
+      let response: any;
+      if (imageBase64 && this.model instanceof GeminiClient) {
+        response = await this.model.invoke(input, { mime_type: mimeType, data: imageBase64 });
+      } else {
+        response = await this.model.invoke(input);
+      }
+
+      const contentStr = this.normalizeModelResponse(response);
+      if (debug) console.debug('[AI classify] normalized response:', contentStr?.slice(0, 2000));
+
+      // Try multiple parsing strategies
+      let parsed: any = null;
+
+      // Strategy 1: Try the loose regex-based parser FIRST (best for handling messy JSON)
+      try {
+        const looseParsed = this.parseFacturaLoose(contentStr);
+        if (looseParsed && looseParsed.productos && looseParsed.productos.length > 0) {
+          parsed = looseParsed;
+          if (debug) console.debug('[AI classify] Successfully parsed using loose parser');
+        }
+      } catch (e) {
+        if (debug) console.debug('[AI classify] Loose parser failed, trying other strategies');
+      }
+
+      // Strategy 2: If loose parser didn't work, try robust JSON parsing
+      if (!parsed) {
+        parsed = this.tryParseJSON(contentStr);
+        if (parsed && debug) console.debug('[AI classify] Successfully parsed using tryParseJSON');
+      }
+
+      // Strategy 3: Try the structured parser as final attempt
+      if (!parsed) {
+        try {
+          const sanitized = this.sanitizeModelJSON(contentStr);
+          parsed = await parser.parse(sanitized);
+          if (debug) console.debug('[AI classify] Successfully parsed using StructuredOutputParser');
+        } catch (err) {
+          if (debug) console.debug('[AI classify] StructuredOutputParser failed:', err);
+        }
+      }
+
+      // If we got a valid parsed object, return it
+      if (parsed && typeof parsed === 'object') {
+        return parsed as Partial<Factura> & { debug?: any };
+      }
+
+      // Final fallback: return empty result
+      if (debug) console.warn('[AI classify] All parsing strategies failed, returning empty result');
+      return { proveedor: null, fecha: null, moneda: null, valorTotal: null, productos: [] };
+    } catch (error) {
+      console.error('[AI classify] Error calling LLM:', error);
+      return { proveedor: null, fecha: null, moneda: null, valorTotal: null, productos: [] };
+    }
+  }
+
+  // Very forgiving parser: extracts factura fields and products from pretty-printed JSON-like text
+  private parseFacturaLoose(text: string): Partial<Factura> | null {
+    if (!text || typeof text !== 'string') return null;
+    // Try to find proveedor, fecha, moneda, valorTotal
+    const getString = (key: string) => {
+      const re = new RegExp(`"${key}"\s*:\s*"([^"]*)"`, 'i');
+      const m = text.match(re);
+      return m ? m[1] : null;
+    };
+    const getNumber = (key: string) => {
+      const re = new RegExp(`"${key}"\s*:\s*([0-9]+(?:\.[0-9]+)?)`, 'i');
+      const m = text.match(re);
+      return m ? Number(m[1]) : null;
+    };
+
+    const proveedor = getString('proveedor');
+    const fecha = getString('fecha');
+    const moneda = getString('moneda') || getString('currency');
+    const valorTotal = getNumber('valorTotal');
+
+    // Extract products block
+    const productsBlockMatch = text.match(/"productos"\s*:\s*\[([\s\S]*?)]/i);
+    const productos: any[] = [];
+    if (productsBlockMatch && productsBlockMatch[1]) {
+      const inner = productsBlockMatch[1];
+      // Match individual product objects { ... }
+      const objRe = /{([\s\S]*?)}/g;
+      let m: RegExpExecArray | null;
+      while ((m = objRe.exec(inner))) {
+        const objText = m[1];
+        const descripcionMatch = objText.match(/"descripcion"\s*:\s*"([^"]*)"/i);
+        const cantidadMatch = objText.match(/"cantidad"\s*:\s*([0-9]+)/i);
+        const vuMatch = objText.match(/"valorUnitario"\s*:\s*([0-9]+(?:\.[0-9]+)?)/i);
+        const vtMatch = objText.match(/"valorTotal"\s*:\s*([0-9]+(?:\.[0-9]+)?)/i);
+        const subMatch = objText.match(/"subpartida"\s*:\s*(?:"([^"]*)"|([A-Za-z0-9_\- ]+))/i);
+        const descripcion = descripcionMatch ? descripcionMatch[1] : '';
+        const cantidad = cantidadMatch ? Number(cantidadMatch[1]) : null;
+        const valorUnitario = vuMatch ? Number(vuMatch[1]) : null;
+        const valorTotal = vtMatch ? Number(vtMatch[1]) : null;
+        let subpartida: any = null;
+        if (subMatch) {
+          subpartida = subMatch[1] ?? subMatch[2] ?? null;
+        }
+        productos.push({ descripcion, cantidad, valorUnitario, valorTotal, subpartida });
+      }
+    }
+
+    if (!proveedor && !fecha && productos.length === 0) return null;
+    return { proveedor: proveedor ?? null, fecha: fecha ?? null, moneda: moneda ?? null, valorTotal: valorTotal ?? null, productos };
+  }
+
+  // Clean a JSON-like string to increase the chance JSON.parse will succeed.
+  // - normalize smart quotes to straight quotes
+  // - remove control characters except newlines
+  // - collapse repeated backslashes
+  // - remove trailing commas before } or ]
+  // - handle escaped newlines and quotes in JSON strings
+  private cleanJSONString(raw: string): string {
+    if (!raw || typeof raw !== 'string') return raw;
+    let s = raw;
+    
+    // Normalize smart quotes
+    s = s.replace(/[\u2018\u2019\u201A\u201B\u2032\u2035]/g, "'");
+    s = s.replace(/[\u201C\u201D\u201E\u201F\u2033\u2036]/g, '"');
+    
+    // Remove control chars except newline and tab
+    s = s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
+    
+    // Handle literal newlines in JSON strings: replace actual newlines with spaces
+    s = s.replace(/[\r\n]+/g, ' ');
+    
+    // Handle double-escaped sequences carefully: \\n -> \n in raw form
+    // But we need JSON-valid escape sequences in the final string
+    let prev: string | null = null;
+    let attempts = 0;
+    while (s !== prev && attempts < 4) {
+      prev = s;
+      // Collapse excessive backslashes: \\\\ -> \\
+      s = s.replace(/\\\\\\\\/g, '\\\\');  
+      attempts++;
+    }
+    
+    // Remove trailing commas before } or ]
+    s = s.replace(/,\s*(?=[}\]])/g, '');
+    
+    // Fix common JSON syntax issues
+    // Remove multiple spaces between tokens but preserve single spaces
+    s = s.replace(/\s{2,}/g, ' ');
+    
+    return s.trim();
+  }
+
   // Normalize and extract plain text from various LLM client response shapes.
   // Handles strings, objects with `content`, `parts`, `candidates`, `choices`, and markdown code fences containing JSON.
   private normalizeModelResponse(response: any): string {
@@ -780,7 +992,7 @@ INSTRUCCIÓN IMPORTANTE: Genera únicamente un JSON válido con la siguiente est
 
     candidate = candidate.trim();
 
-    // Remove surrounding quotes
+    // Remove surrounding quotes (handles both single and double)
     if (
       (candidate.startsWith('"') && candidate.endsWith('"')) ||
       (candidate.startsWith("'") && candidate.endsWith("'"))
@@ -788,19 +1000,24 @@ INSTRUCCIÓN IMPORTANTE: Genera únicamente un JSON válido con la siguiente est
       candidate = candidate.slice(1, -1).trim();
     }
 
-    // Unescape common sequences repeatedly in case of double-escaping
+    // Handle escaped newlines: convert \\n to actual newlines 
+    // But be careful with backslashes - only convert the standard JSON escape sequences
+    candidate = candidate
+      .replace(/\\n/g, ' ')    // Replace \n with space to avoid newlines in JSON
+      .replace(/\\r/g, ' ')    // Replace \r with space
+      .replace(/\\t/g, ' ');   // Replace \t with space
+
+    // Collapse consecutive spaces created by the above replacements
+    candidate = candidate.replace(/\s{2,}/g, ' ');
+
+    // Unescape double-escaped quotes in case of \\\" -> \"
     let prev: string | null = null;
     let attempts = 0;
-    while (candidate !== prev && attempts < 6) {
+    while (candidate !== prev && attempts < 5) {
       prev = candidate;
-      // Normalize double-escaped sequences by collapsing double backslashes to single
-      candidate = candidate
-        .replace(/\\r/g, '')
-        .replace(/\\n/g, '\n')
-        .replace(/\\t/g, ' ')
-        // Do NOT replace escaped quotes (\") -> '"' here; keep escapes for valid JSON
-        .replace(/\\\\/g, '\\')
-        .trim();
+      // Unescape double backslashes but preserve single backslashes before quotes
+      // Pattern: \\\\ -> \\ (reduce quadruple backslash to double)
+      candidate = candidate.replace(/\\\\\\\\/g, '\\\\').trim();
       attempts++;
     }
 
@@ -846,5 +1063,84 @@ INSTRUCCIÓN IMPORTANTE: Genera únicamente un JSON válido con la siguiente est
 
     // Fallback to object-sanitizer
     return this.sanitizeModelJSON(raw);
+  }
+
+  // Robust JSON parser that tries multiple strategies
+  private tryParseJSON(text: string): any {
+    if (!text || typeof text !== 'string') return null;
+    
+    // Strategy 1: Direct parse
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      // Continue to next strategy
+    }
+
+    // Strategy 2: Clean and parse
+    try {
+      const cleaned = this.cleanJSONString(text);
+      return JSON.parse(cleaned);
+    } catch (e) {
+      // Continue to next strategy
+    }
+
+    // Strategy 3: Extract object using braces and clean
+    if (text.trim().startsWith('{')) {
+      try {
+        const firstIdx = text.indexOf('{');
+        const lastIdx = text.lastIndexOf('}');
+        if (firstIdx >= 0 && lastIdx > firstIdx) {
+          const extracted = text.substring(firstIdx, lastIdx + 1);
+          const cleaned = this.cleanJSONString(extracted);
+          return JSON.parse(cleaned);
+        }
+      } catch (e) {
+        // Continue to next strategy
+      }
+    }
+
+    // Strategy 4: Extract array using brackets and clean
+    if (text.trim().startsWith('[')) {
+      try {
+        const firstIdx = text.indexOf('[');
+        const lastIdx = text.lastIndexOf(']');
+        if (firstIdx >= 0 && lastIdx > firstIdx) {
+          const extracted = text.substring(firstIdx, lastIdx + 1);
+          const cleaned = this.cleanJSONString(extracted);
+          return JSON.parse(cleaned);
+        }
+      } catch (e) {
+        // Continue to next strategy
+      }
+    }
+
+    // Strategy 5: Try unescaping one level and parse
+    try {
+      // Single level unescape: \" -> ", \\ -> \, etc.
+      const unescaped = text
+        .replace(/\\"/g, '"')
+        .replace(/\\n/g, '\n')
+        .replace(/\\t/g, '\t')
+        .replace(/\\r/g, '\r')
+        .trim();
+      
+      if ((unescaped.startsWith('{') && unescaped.endsWith('}')) ||
+          (unescaped.startsWith('[') && unescaped.endsWith(']'))) {
+        return JSON.parse(unescaped);
+      }
+    } catch (e) {
+      // Continue to next strategy
+    }
+
+    // Strategy 6: Try the loose regex-based parser as last resort
+    try {
+      if (text.includes('"proveedor"')) {
+        return this.parseFacturaLoose(text);
+      }
+    } catch (e) {
+      // Continue
+    }
+
+    return null;
   }
 }

@@ -17,7 +17,16 @@ async function bootstrap() {
     .addBearerAuth()
     .build();
   const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup('api', app, document);
+  app.enableCors({ origin: true, credentials: true });
+  app.setGlobalPrefix('api');
+  SwaggerModule.setup('docs', app, document, {
+    customCssUrl:
+      'https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/5.11.0/swagger-ui.min.css',
+    customJs: [
+      'https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/5.11.0/swagger-ui-bundle.min.js',
+      'https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/5.11.0/swagger-ui-standalone-preset.min.js',
+    ],
+  });
   app.useLogger(app.get(Logger));
   const logger = app.get(Logger);
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
@@ -29,7 +38,7 @@ async function bootstrap() {
     forbidNonWhitelisted: true,
   }));
   // Enable CORS and accept all origins (disables origin validation)
-  app.enableCors({ origin: true, credentials: true });
+
   await app.listen(3001);
   if (module.hot) {
     module.hot.accept();

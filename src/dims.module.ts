@@ -6,6 +6,7 @@ import { LangChainAIService } from 'src/infraestructure/adapters/domain/langchai
 import { BuscarSubpartidasUseCase } from 'src/core/application/usecases/dims/buscar-subpartidas.usecase';
 import { BuscarSubpartidasDesdePdfUseCase } from 'src/core/application/usecases/dims/buscar-subpartidas-desde-pdf.usecase';
 import { DigitalizarFacturaUseCase } from 'src/core/application/usecases/dims/digitalizar-factura.usecase';
+import { ClasificarFacturaUseCase } from 'src/core/application/usecases/dims/clasificar-factura.usecase';
 import { DimsController } from 'src/interfaces/controllers/dims/dims.controller';
 
 @Module({
@@ -14,6 +15,7 @@ import { DimsController } from 'src/interfaces/controllers/dims/dims.controller'
     BuscarSubpartidasUseCase,
     BuscarSubpartidasDesdePdfUseCase,
     DigitalizarFacturaUseCase,
+    ClasificarFacturaUseCase,
     {
       provide: SUBPARTIDA_REPOSITORY,
       useClass: MockSubpartidaRepository,
@@ -23,6 +25,6 @@ import { DimsController } from 'src/interfaces/controllers/dims/dims.controller'
       useClass: LangChainAIService,
     },
   ],
-  exports: [BuscarSubpartidasUseCase, BuscarSubpartidasDesdePdfUseCase, DigitalizarFacturaUseCase],
+  exports: [BuscarSubpartidasUseCase, BuscarSubpartidasDesdePdfUseCase, DigitalizarFacturaUseCase, ClasificarFacturaUseCase],
 })
 export class DimsModule {}
