@@ -47,6 +47,13 @@ export class MockSubpartidaRepository implements SubpartidaRepository {
         arancel: 15,
         linea: 'negra',
       }),
+    new Subpartida({
+      id: '2',
+      codigo: '8471.31.00.00',
+      descripcion: 'Computadoras de escritorio',
+      arancel: 0,
+      linea: 'electronica',
+    }),
   ];
 
   async search(termino: string, linea?: string): Promise<Subpartida[]> {
