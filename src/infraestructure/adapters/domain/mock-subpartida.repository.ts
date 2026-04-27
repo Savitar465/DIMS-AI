@@ -59,15 +59,15 @@ export class MockSubpartidaRepository implements SubpartidaRepository {
       codigo: '2000.31.00.00',
       descripcion: 'Partes de automovil',
       arancel: 10,
-      linea: 'automoviles',
+      linea: 'otra',
     }),
     new Subpartida({
       id: '9',
       codigo: '20001.31.00.00',
       descripcion: 'Repuestos de automovil',
       arancel: 20,
-      linea: 'automoviles',
-    }),
+      linea: 'otra',
+    })
   ];
 
   async search(termino: string, linea?: string): Promise<Subpartida[]> {
