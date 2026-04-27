@@ -48,11 +48,25 @@ export class MockSubpartidaRepository implements SubpartidaRepository {
         linea: 'negra',
       }),
     new Subpartida({
-      id: '2',
+      id: '7',
       codigo: '8471.31.00.00',
       descripcion: 'Computadoras de escritorio',
       arancel: 0,
       linea: 'electronica',
+    }),
+    new Subpartida({
+      id: '8',
+      codigo: '2000.31.00.00',
+      descripcion: 'Partes de automovil',
+      arancel: 10,
+      linea: 'automoviles',
+    }),
+    new Subpartida({
+      id: '9',
+      codigo: '20001.31.00.00',
+      descripcion: 'Repuestos de automovil',
+      arancel: 20,
+      linea: 'automoviles',
     }),
   ];
 
