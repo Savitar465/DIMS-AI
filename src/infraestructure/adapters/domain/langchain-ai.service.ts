@@ -352,25 +352,31 @@ export class LangChainAIService implements AIService {
     const parser = StructuredOutputParser.fromZodSchema(
       z.array(
         z.object({
-          id: z.string(),
+          code: z.string().describe('Código de la subpartida (10 dígitos)'),
           razon: z
             .string()
             .describe('Razón por la cual esta subpartida es relevante'),
+          score: z
+            .number()
+            .describe('Puntuación de relevancia semántica entre 0 y 1'),
         }),
       ),
     );
 
     const prompt = new PromptTemplate({
-      template: `Eres un experto en comercio exterior. Tu tarea es encontrar las subpartidas arancelarias más adecuadas para el siguiente producto.
+      template: `Eres un experto en comercio exterior y clasificación arancelaria NANDINA (Bolivia). Tu tarea es encontrar las subpartidas más adecuadas para el siguiente producto.
 Producto: "{descripcion}"
+Línea solicitada (opcional): {linea}
 
 Subpartidas disponibles:
 {subpartidas}
 
 INSTRUCCIONES IMPORTANTES:
 - Devuelve ÚNICAMENTE un JSON válido y nada más.
-- El JSON debe ser un ARRAY de objetos con la siguiente forma: [{{ "id": "123456", "razon": "Texto explicativo de por qué aplica" }} , ...]
-- Si no hay coincidencias exactas, incluye las subpartidas más cercanas.
+- El JSON debe ser un ARRAY de objetos ordenados de mayor a menor relevancia: [{{ "code": "8471.30.00.00", "razon": "Texto explicativo", "score": 0.92 }} , ...]
+- Usa SOLO los códigos (campo "code") que aparecen en la lista de subpartidas disponibles.
+- "score" es un número entre 0 y 1 que representa la confianza de la coincidencia.
+- Si no hay coincidencias exactas, incluye las subpartidas más cercanas con un score más bajo.
 
 Usa las siguientes instrucciones de formato para asegurar la salida JSON:
 {format_instructions}
@@ -703,7 +709,7 @@ INSTRUCCIÓN IMPORTANTE: Genera únicamente un JSON válido con la siguiente est
             valorUnitario: z.number().nullable(),
             valorTotal: z.number().nullable(),
             subpartida: z.union([
-              z.object({ id: z.string().optional(), codigo: z.string().optional(), razon: z.string().optional() }),
+              z.object({ code: z.string().optional(), razon: z.string().optional() }),
               z.literal('sin clasificacion'),
             ]),
           }),
@@ -720,6 +726,8 @@ INSTRUCCIÓN IMPORTANTE: Genera únicamente un JSON válido con la siguiente est
 INSTRUCCIÓN CRÍTICA: 
 - Devuelve ÚNICAMENTE un JSON válido, sin texto adicional, sin explicaciones, sin código de marcado.
 - El JSON debe ser parseable directamente por JSON.parse()
+- Para clasificar cada producto usa el campo "code" de la subpartida elegida: "subpartida": {{ "code": "8471.30.00.00", "razon": "..." }}
+- Usa SOLO los códigos (campo "code") que aparecen en la lista de subpartidas disponibles.
 - Si un producto no coincide con ninguna subpartida, usa exactamente "sin clasificacion"
 - NO incluyas caracteres especiales sin escapar dentro de strings JSON
 - NO uses saltos de línea en el JSON, usa espacios en su lugar

@@ -2,8 +2,12 @@ import { Global, Module } from '@nestjs/common';
 import { CqrsModule } from '@nestjs/cqrs';
 import { LoggerModule } from 'nestjs-pino';
 import { ConfigModule } from '@nestjs/config';
+import { TypeOrmModule } from '@nestjs/typeorm';
 import databaseConfig from './infraestructure/shared/config/database.config';
 import { DimsModule } from './dims.module';
+import { SubpartidaEntity } from './infraestructure/persistance/entities/subpartida.entity';
+import { FacturaEntity } from './infraestructure/persistance/entities/factura.entity';
+import { DimsEntity } from './infraestructure/persistance/entities/dims.entity';
 
 @Global()
 @Module({
@@ -18,6 +22,12 @@ import { DimsModule } from './dims.module';
         allowUnknown: true,
         abortEarly: false,
       },
+    }),
+    TypeOrmModule.forRoot({
+      type: 'better-sqlite3',
+      database: process.env.DATABASE_PATH || 'dims.sqlite',
+      entities: [SubpartidaEntity, FacturaEntity, DimsEntity],
+      synchronize: true,
     }),
     // Configure pino logger: enable human-friendly `pino-pretty` only in development.
     LoggerModule.forRoot((() => {

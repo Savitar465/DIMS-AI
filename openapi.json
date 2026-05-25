@@ -1,0 +1,1520 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "DIMS AI API",
+    "version": "1.0.0",
+    "description": "API para DIMS AI — plataforma asistida por IA que extrae datos de facturas comerciales y genera la Declaración de Importación de Mercancías Simplificada (DIMS) de la Aduana Nacional de Bolivia. Cubre extracción de facturas, ciclo de vida de la DIMS (crear → editar → generar → validar → exportar/enviar a SUMA), búsqueda de subpartidas del Arancel, productos recurrentes, glosario e integraciones.",
+    "contact": {
+      "name": "DIMS AI"
+    },
+    "license": {
+      "name": "Proprietary"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://api.dims.ai/v1",
+      "description": "Producción"
+    },
+    {
+      "url": "https://sandbox.api.dims.ai/v1",
+      "description": "Sandbox"
+    }
+  ],
+  "tags": [
+    { "name": "Dashboard", "description": "Resumen, métricas e insights de IA" },
+    { "name": "Flujo", "description": "Pasos del asistente y borradores en progreso" },
+    { "name": "Facturas", "description": "Carga de facturas y extracción con IA" },
+    { "name": "DIMS", "description": "Ciclo de vida de las declaraciones DIMS" },
+    { "name": "Arancel", "description": "Búsqueda de subpartidas y líneas del Arancel de Importaciones" },
+    { "name": "Productos", "description": "Productos recurrentes / favoritos" },
+    { "name": "Glosario", "description": "Términos aduaneros" },
+    { "name": "Integraciones", "description": "Conexiones, API keys, webhooks e historial de sincronización" }
+  ],
+  "security": [
+    { "bearerAuth": [] },
+    { "apiKey": [] }
+  ],
+  "paths": {
+    "/dashboard": {
+      "get": {
+        "tags": ["Dashboard"],
+        "summary": "Obtener datos del dashboard",
+        "description": "Devuelve el resumen del usuario: métricas del mes, DIMS recientes, conteo de borradores e insight de IA.",
+        "operationId": "getDashboard",
+        "responses": {
+          "200": {
+            "description": "Datos del dashboard",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DashboardData" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/flujo": {
+      "get": {
+        "tags": ["Flujo"],
+        "summary": "Obtener pasos del flujo y borradores",
+        "description": "Devuelve la definición de los 5 pasos del asistente y la lista de DIMS en borrador con su paso actual.",
+        "operationId": "getFlujo",
+        "responses": {
+          "200": {
+            "description": "Pasos del flujo y borradores",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/FlujoData" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/facturas": {
+      "post": {
+        "tags": ["Facturas"],
+        "summary": "Cargar factura para extracción con IA",
+        "description": "Sube un PDF, JPG o PNG (máx. 10 MB) de la factura comercial. La IA extrae proveedor, ítems, cantidades, precios y sugiere subpartidas. La extracción puede ser asíncrona; consultar GET /facturas/{facturaId} hasta que estado sea `extraida`.",
+        "operationId": "uploadFactura",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["archivo"],
+                "properties": {
+                  "archivo": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "Archivo de factura (PDF, JPG, PNG). Máx. 10 MB."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Factura recibida y en proceso (o ya extraída).",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Factura" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "413": {
+            "description": "Archivo demasiado grande (supera 10 MB).",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          },
+          "415": {
+            "description": "Tipo de archivo no soportado.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/facturas/{facturaId}": {
+      "parameters": [{ "$ref": "#/components/parameters/FacturaId" }],
+      "get": {
+        "tags": ["Facturas"],
+        "summary": "Obtener factura y datos extraídos",
+        "operationId": "getFactura",
+        "responses": {
+          "200": {
+            "description": "Factura con datos extraídos por la IA y niveles de confianza.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Factura" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      },
+      "put": {
+        "tags": ["Facturas"],
+        "summary": "Corregir datos extraídos",
+        "description": "Actualiza los datos de proveedor, cabecera y totales tras la revisión humana (paso «Editar datos»).",
+        "operationId": "updateFactura",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/FacturaUpdate" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Factura actualizada.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Factura" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/facturas/{facturaId}/items/{itemId}": {
+      "parameters": [
+        { "$ref": "#/components/parameters/FacturaId" },
+        {
+          "name": "itemId",
+          "in": "path",
+          "required": true,
+          "description": "Identificador del ítem de la factura.",
+          "schema": { "type": "string" }
+        }
+      ],
+      "put": {
+        "tags": ["Facturas"],
+        "summary": "Asignar/corregir la subpartida de un ítem",
+        "description": "Confirma o cambia la subpartida arancelaria sugerida por la IA para un ítem. Útil para clasificar ítems con baja confianza.",
+        "operationId": "updateFacturaItem",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "descripcion": { "type": "string" },
+                  "cantidad": { "type": "number", "minimum": 0 },
+                  "unidad": { "type": "string" },
+                  "precioUnit": { "type": "number", "minimum": 0 },
+                  "subpartida": {
+                    "type": ["string", "null"],
+                    "description": "Código de subpartida arancelaria (10 dígitos).",
+                    "example": "8471.30.00.00"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Ítem actualizado.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/FacturaItem" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/dims": {
+      "get": {
+        "tags": ["DIMS"],
+        "summary": "Listar DIMS",
+        "description": "Lista paginada de declaraciones, con filtros por estado y búsqueda por proveedor o número.",
+        "operationId": "listDims",
+        "parameters": [
+          {
+            "name": "estado",
+            "in": "query",
+            "description": "Filtrar por estado.",
+            "schema": { "$ref": "#/components/schemas/DimsEstado" }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Búsqueda por número de DIMS o proveedor.",
+            "schema": { "type": "string" }
+          },
+          { "$ref": "#/components/parameters/Page" },
+          { "$ref": "#/components/parameters/PageSize" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Lista de DIMS.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["data", "pagination"],
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/DimsResumen" }
+                    },
+                    "pagination": { "$ref": "#/components/schemas/Pagination" }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      },
+      "post": {
+        "tags": ["DIMS"],
+        "summary": "Crear una DIMS",
+        "description": "Crea una declaración en estado `borrador`. Puede crearse a partir de una factura ya extraída (facturaId) o desde una subpartida del buscador.",
+        "operationId": "createDims",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "facturaId": {
+                    "type": "string",
+                    "description": "Factura de origen ya extraída.",
+                    "example": "fac_8f21a"
+                  },
+                  "subpartida": {
+                    "type": "string",
+                    "description": "Subpartida inicial cuando se crea desde el buscador del Arancel.",
+                    "example": "8471.30.00.00"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "DIMS creada.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Dims" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/dims/{dimsId}": {
+      "parameters": [{ "$ref": "#/components/parameters/DimsId" }],
+      "get": {
+        "tags": ["DIMS"],
+        "summary": "Obtener una DIMS",
+        "operationId": "getDims",
+        "responses": {
+          "200": {
+            "description": "Detalle de la DIMS.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Dims" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      },
+      "put": {
+        "tags": ["DIMS"],
+        "summary": "Actualizar una DIMS",
+        "operationId": "updateDims",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/DimsUpdate" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "DIMS actualizada.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Dims" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      },
+      "delete": {
+        "tags": ["DIMS"],
+        "summary": "Eliminar una DIMS",
+        "description": "Solo se permite eliminar DIMS en estado `borrador`.",
+        "operationId": "deleteDims",
+        "responses": {
+          "204": { "description": "DIMS eliminada." },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/dims/{dimsId}/generate": {
+      "parameters": [{ "$ref": "#/components/parameters/DimsId" }],
+      "post": {
+        "tags": ["DIMS"],
+        "summary": "Generar el formulario y la liquidación",
+        "description": "La IA arma el formulario de Aduana y calcula CIF, GA, IVA e ICE según la subpartida de cada ítem.",
+        "operationId": "generateDims",
+        "responses": {
+          "200": {
+            "description": "DIMS con liquidación calculada.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Dims" }
+              }
+            }
+          },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/dims/{dimsId}/validate": {
+      "parameters": [{ "$ref": "#/components/parameters/DimsId" }],
+      "post": {
+        "tags": ["DIMS"],
+        "summary": "Validar contra SUMA",
+        "description": "Comprueba consistencia tributaria, vigencia de subpartidas y restricciones contra el sistema SUMA de la Aduana Nacional.",
+        "operationId": "validateDims",
+        "responses": {
+          "200": {
+            "description": "Resultado de la validación.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ValidationResult" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/dims/{dimsId}/export": {
+      "parameters": [{ "$ref": "#/components/parameters/DimsId" }],
+      "post": {
+        "tags": ["DIMS"],
+        "summary": "Exportar la DIMS",
+        "description": "Genera el archivo de la DIMS en el formato solicitado. Devuelve una URL de descarga temporal.",
+        "operationId": "exportDims",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["formato"],
+                "properties": {
+                  "formato": { "$ref": "#/components/schemas/ExportFormat" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Archivo generado.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ExportResult" }
+              }
+            }
+          },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/dims/{dimsId}/email": {
+      "parameters": [{ "$ref": "#/components/parameters/DimsId" }],
+      "post": {
+        "tags": ["DIMS"],
+        "summary": "Enviar la DIMS por correo",
+        "description": "Envía el archivo de la DIMS (en el formato indicado) como adjunto a un destinatario.",
+        "operationId": "emailDims",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["destinatario", "formato"],
+                "properties": {
+                  "destinatario": {
+                    "type": "string",
+                    "format": "email",
+                    "example": "agente@despachante.bo"
+                  },
+                  "formato": { "$ref": "#/components/schemas/ExportFormat" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": { "description": "Correo encolado para envío." },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/dims/{dimsId}/submit": {
+      "parameters": [{ "$ref": "#/components/parameters/DimsId" }],
+      "post": {
+        "tags": ["DIMS"],
+        "summary": "Transmitir la DIMS a SUMA",
+        "description": "Transmite la declaración directamente al sistema SUMA. La DIMS debe estar validada sin errores. Cambia el estado a `enviada`.",
+        "operationId": "submitDims",
+        "responses": {
+          "200": {
+            "description": "DIMS transmitida a SUMA.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Dims" }
+              }
+            }
+          },
+          "409": {
+            "description": "La DIMS no está en un estado válido para enviar (p. ej. no validada o con errores).",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/arancel/lineas": {
+      "get": {
+        "tags": ["Arancel"],
+        "summary": "Listar líneas del Arancel",
+        "description": "Líneas de clasificación: Línea Blanca, Línea Negra, Electrónica.",
+        "operationId": "listLineas",
+        "responses": {
+          "200": {
+            "description": "Lista de líneas.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/Linea" }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/arancel/subpartidas": {
+      "get": {
+        "tags": ["Arancel"],
+        "summary": "Buscar subpartidas del Arancel",
+        "description": "Búsqueda asistida por IA con coincidencia semántica contra la nomenclatura NANDINA del Arancel de Importaciones boliviano. Acepta descripciones de factura o códigos.",
+        "operationId": "searchSubpartidas",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Texto de búsqueda: descripción del producto o código de subpartida.",
+            "schema": { "type": "string" },
+            "example": "laptop 14 pulgadas"
+          },
+          {
+            "name": "linea",
+            "in": "query",
+            "description": "Filtrar por línea de clasificación.",
+            "schema": { "$ref": "#/components/schemas/LineaId" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Resultados de la búsqueda, ordenados por relevancia (el primero es la mejor coincidencia según la IA).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["query", "resultados"],
+                  "properties": {
+                    "query": { "type": "string" },
+                    "resultados": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/SubpartidaMatch" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/arancel/subpartidas/{code}": {
+      "parameters": [
+        {
+          "name": "code",
+          "in": "path",
+          "required": true,
+          "description": "Código de subpartida arancelaria (10 dígitos).",
+          "schema": { "type": "string" },
+          "example": "8471.30.00.00"
+        }
+      ],
+      "get": {
+        "tags": ["Arancel"],
+        "summary": "Obtener una subpartida",
+        "operationId": "getSubpartida",
+        "responses": {
+          "200": {
+            "description": "Detalle de la subpartida con su carga tributaria.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Subpartida" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/productos": {
+      "get": {
+        "tags": ["Productos"],
+        "summary": "Listar productos recurrentes",
+        "operationId": "listProductos",
+        "responses": {
+          "200": {
+            "description": "Lista de productos favoritos / recurrentes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/ProductoFavorito" }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      },
+      "post": {
+        "tags": ["Productos"],
+        "summary": "Crear un producto recurrente",
+        "description": "Guarda un producto recurrente, normalmente a partir de una subpartida usada con frecuencia.",
+        "operationId": "createProducto",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["nombre", "codigo"],
+                "properties": {
+                  "nombre": { "type": "string", "example": "Laptop Lenovo IdeaPad" },
+                  "codigo": {
+                    "type": "string",
+                    "description": "Subpartida asociada.",
+                    "example": "8471.30.00.00"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Producto creado.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ProductoFavorito" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/productos/{productoId}": {
+      "parameters": [
+        {
+          "name": "productoId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "string" },
+          "example": "p1"
+        }
+      ],
+      "delete": {
+        "tags": ["Productos"],
+        "summary": "Eliminar un producto recurrente",
+        "operationId": "deleteProducto",
+        "responses": {
+          "204": { "description": "Producto eliminado." },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/glosario": {
+      "get": {
+        "tags": ["Glosario"],
+        "summary": "Obtener el glosario de términos aduaneros",
+        "operationId": "getGlosario",
+        "responses": {
+          "200": {
+            "description": "Lista de términos y definiciones.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/GlosarioTerm" }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/integraciones": {
+      "get": {
+        "tags": ["Integraciones"],
+        "summary": "Listar integraciones disponibles",
+        "operationId": "listIntegraciones",
+        "responses": {
+          "200": {
+            "description": "Lista de integraciones y su estado de conexión.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/Integracion" }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/integraciones/{integracionId}/connect": {
+      "parameters": [
+        {
+          "name": "integracionId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "string" },
+          "example": "suma"
+        }
+      ],
+      "post": {
+        "tags": ["Integraciones"],
+        "summary": "Conectar una integración",
+        "operationId": "connectIntegracion",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Credenciales o parámetros de conexión específicos de la integración.",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Integración conectada.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Integracion" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      },
+      "delete": {
+        "tags": ["Integraciones"],
+        "summary": "Desconectar una integración",
+        "operationId": "disconnectIntegracion",
+        "responses": {
+          "204": { "description": "Integración desconectada." },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/integraciones/historial": {
+      "get": {
+        "tags": ["Integraciones"],
+        "summary": "Historial de sincronizaciones",
+        "operationId": "getSyncHistory",
+        "parameters": [
+          { "$ref": "#/components/parameters/Page" },
+          { "$ref": "#/components/parameters/PageSize" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Eventos recientes de sincronización con sistemas externos.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/SyncEvent" }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/integraciones/sincronizar": {
+      "post": {
+        "tags": ["Integraciones"],
+        "summary": "Forzar una sincronización ahora",
+        "operationId": "triggerSync",
+        "responses": {
+          "202": { "description": "Sincronización iniciada." },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/apikeys": {
+      "get": {
+        "tags": ["Integraciones"],
+        "summary": "Listar API keys",
+        "operationId": "listApiKeys",
+        "responses": {
+          "200": {
+            "description": "Lista de claves (valor enmascarado).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/ApiKey" }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      },
+      "post": {
+        "tags": ["Integraciones"],
+        "summary": "Crear una API key",
+        "description": "Crea una nueva clave. El valor completo (`secret`) se devuelve una sola vez en la respuesta de creación.",
+        "operationId": "createApiKey",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["label", "entorno"],
+                "properties": {
+                  "label": { "type": "string", "example": "Integración ERP" },
+                  "entorno": {
+                    "type": "string",
+                    "enum": ["produccion", "sandbox"]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Clave creada. `secret` solo se muestra aquí.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/ApiKey" },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "secret": {
+                          "type": "string",
+                          "description": "Valor completo de la clave. Guárdalo: no se vuelve a mostrar.",
+                          "example": "dims_live_8f21a72f5fb9c8e2a47d3"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/apikeys/{keyId}": {
+      "parameters": [
+        {
+          "name": "keyId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "string" }
+        }
+      ],
+      "delete": {
+        "tags": ["Integraciones"],
+        "summary": "Revocar una API key",
+        "operationId": "revokeApiKey",
+        "responses": {
+          "204": { "description": "Clave revocada." },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/webhooks": {
+      "get": {
+        "tags": ["Integraciones"],
+        "summary": "Listar webhooks",
+        "operationId": "listWebhooks",
+        "responses": {
+          "200": {
+            "description": "Lista de webhooks configurados.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/Webhook" }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      },
+      "post": {
+        "tags": ["Integraciones"],
+        "summary": "Crear un webhook",
+        "description": "Registra una URL para recibir notificaciones cuando una DIMS cambia de estado.",
+        "operationId": "createWebhook",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["url", "events"],
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "format": "uri",
+                    "example": "https://erp.miempresa.bo/webhooks/dims"
+                  },
+                  "events": {
+                    "type": "array",
+                    "items": { "$ref": "#/components/schemas/WebhookEvent" },
+                    "example": ["dims.created", "dims.approved"]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Webhook creado.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Webhook" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/webhooks/{webhookId}": {
+      "parameters": [
+        {
+          "name": "webhookId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "string" }
+        }
+      ],
+      "delete": {
+        "tags": ["Integraciones"],
+        "summary": "Eliminar un webhook",
+        "operationId": "deleteWebhook",
+        "responses": {
+          "204": { "description": "Webhook eliminado." },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Token de sesión del usuario."
+      },
+      "apiKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+        "description": "API key para integraciones (dims_live_… / dims_test_…)."
+      }
+    },
+    "parameters": {
+      "FacturaId": {
+        "name": "facturaId",
+        "in": "path",
+        "required": true,
+        "description": "Identificador de la factura.",
+        "schema": { "type": "string" },
+        "example": "fac_8f21a"
+      },
+      "DimsId": {
+        "name": "dimsId",
+        "in": "path",
+        "required": true,
+        "description": "Número/identificador de la DIMS.",
+        "schema": { "type": "string" },
+        "example": "DIMS-2026-04823"
+      },
+      "Page": {
+        "name": "page",
+        "in": "query",
+        "description": "Número de página (1-based).",
+        "schema": { "type": "integer", "minimum": 1, "default": 1 }
+      },
+      "PageSize": {
+        "name": "pageSize",
+        "in": "query",
+        "description": "Tamaño de página.",
+        "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Solicitud inválida.",
+        "content": {
+          "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+        }
+      },
+      "Unauthorized": {
+        "description": "No autenticado o credenciales inválidas.",
+        "content": {
+          "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+        }
+      },
+      "NotFound": {
+        "description": "Recurso no encontrado.",
+        "content": {
+          "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+        }
+      },
+      "Conflict": {
+        "description": "Conflicto con el estado actual del recurso.",
+        "content": {
+          "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+        }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": ["code", "message"],
+            "properties": {
+              "code": { "type": "string", "example": "not_found" },
+              "message": { "type": "string", "example": "La DIMS solicitada no existe." },
+              "details": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            }
+          }
+        }
+      },
+      "Pagination": {
+        "type": "object",
+        "required": ["page", "pageSize", "total"],
+        "properties": {
+          "page": { "type": "integer", "example": 1 },
+          "pageSize": { "type": "integer", "example": 20 },
+          "total": { "type": "integer", "example": 137 }
+        }
+      },
+      "DimsEstado": {
+        "type": "string",
+        "enum": ["borrador", "enviada", "aprobada"],
+        "description": "Estado del ciclo de vida de la DIMS."
+      },
+      "DimsResumen": {
+        "type": "object",
+        "required": ["id", "proveedor", "fecha", "valor", "estado"],
+        "properties": {
+          "id": { "type": "string", "example": "DIMS-2026-04823" },
+          "proveedor": { "type": "string", "example": "Shenzhen Electronics" },
+          "fecha": { "type": "string", "format": "date", "example": "2026-05-10" },
+          "valor": { "type": "number", "description": "Valor CIF.", "example": 9225.0 },
+          "estado": { "$ref": "#/components/schemas/DimsEstado" }
+        }
+      },
+      "DashboardStat": {
+        "type": "object",
+        "required": ["value", "sub"],
+        "properties": {
+          "value": { "type": "string", "example": "12" },
+          "sub": { "type": "string", "example": "+3 vs mes anterior" }
+        }
+      },
+      "DashboardStats": {
+        "type": "object",
+        "required": ["dimsEsteMes", "tiempoPromedio", "precisionIA", "ahorroEstimado"],
+        "properties": {
+          "dimsEsteMes": { "$ref": "#/components/schemas/DashboardStat" },
+          "tiempoPromedio": { "$ref": "#/components/schemas/DashboardStat" },
+          "precisionIA": { "$ref": "#/components/schemas/DashboardStat" },
+          "ahorroEstimado": { "$ref": "#/components/schemas/DashboardStat" }
+        }
+      },
+      "AiInsight": {
+        "type": "object",
+        "required": ["titulo", "detalle", "ctaScreen"],
+        "properties": {
+          "titulo": { "type": "string", "example": "La IA detectó un patrón en tus importaciones" },
+          "detalle": { "type": "string" },
+          "ctaScreen": {
+            "type": "string",
+            "description": "Pantalla destino de la acción sugerida.",
+            "example": "productos"
+          }
+        }
+      },
+      "DashboardData": {
+        "type": "object",
+        "required": ["proveedor", "draftsCount", "facturasExtraidas", "stats", "recientes", "insight"],
+        "properties": {
+          "proveedor": {
+            "type": "string",
+            "description": "Nombre del usuario/empresa.",
+            "example": "María Quispe"
+          },
+          "draftsCount": { "type": "integer", "example": 2 },
+          "facturasExtraidas": { "type": "integer", "example": 1 },
+          "stats": { "$ref": "#/components/schemas/DashboardStats" },
+          "recientes": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/DimsResumen" }
+          },
+          "insight": {
+            "oneOf": [
+              { "$ref": "#/components/schemas/AiInsight" },
+              { "type": "null" }
+            ]
+          }
+        }
+      },
+      "FlowStepId": {
+        "type": "string",
+        "enum": ["factura", "editar", "dims", "validar", "exportar"]
+      },
+      "FlowStep": {
+        "type": "object",
+        "required": ["id", "n", "title", "short", "detail", "duration", "hu"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/FlowStepId" },
+          "n": { "type": "integer", "example": 1 },
+          "title": { "type": "string", "example": "Cargar factura" },
+          "short": { "type": "string", "example": "Sube PDF o foto de la factura comercial" },
+          "detail": { "type": "string" },
+          "duration": { "type": "string", "example": "~30 seg" },
+          "hu": { "type": "string", "description": "Referencia de historia de usuario.", "example": "HU-003" }
+        }
+      },
+      "DraftInProgress": {
+        "type": "object",
+        "required": ["id", "proveedor", "items", "valor", "actualizada", "stepIdx", "stepScreen", "pendiente"],
+        "properties": {
+          "id": { "type": "string", "example": "DIMS-2026-04823" },
+          "proveedor": { "type": "string", "example": "Shenzhen Electronics" },
+          "items": { "type": "integer", "example": 4 },
+          "valor": { "type": "number", "example": 9225.0 },
+          "actualizada": { "type": "string", "description": "Marca de tiempo relativa o ISO.", "example": "hace 12 min" },
+          "stepIdx": { "type": "integer", "description": "Índice del paso actual (0-based).", "example": 1 },
+          "stepScreen": { "$ref": "#/components/schemas/FlowStepId" },
+          "pendiente": { "type": "string", "example": "1 ítem sin clasificar" }
+        }
+      },
+      "FlujoData": {
+        "type": "object",
+        "required": ["steps", "drafts"],
+        "properties": {
+          "steps": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/FlowStep" }
+          },
+          "drafts": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/DraftInProgress" }
+          }
+        }
+      },
+      "FacturaEstado": {
+        "type": "string",
+        "enum": ["procesando", "extraida", "error"],
+        "description": "Estado de la extracción con IA."
+      },
+      "FacturaProveedor": {
+        "type": "object",
+        "properties": {
+          "nombre": { "type": "string", "example": "Shenzhen Electronics Co., Ltd." },
+          "direccion": { "type": "string" },
+          "pais": { "type": "string", "example": "China" },
+          "rfc": { "type": "string", "description": "Identificación fiscal del proveedor." },
+          "confidence": { "$ref": "#/components/schemas/Confidence" }
+        }
+      },
+      "FacturaCabecera": {
+        "type": "object",
+        "properties": {
+          "numero": { "type": "string", "example": "INV-2026-04-1842" },
+          "fecha": { "type": "string", "format": "date", "example": "2026-04-22" },
+          "moneda": { "type": "string", "example": "USD" },
+          "incoterm": { "type": "string", "example": "FOB" },
+          "puertoEmbarque": { "type": "string", "example": "Shenzhen" },
+          "confidence": { "$ref": "#/components/schemas/Confidence" }
+        }
+      },
+      "FacturaItem": {
+        "type": "object",
+        "required": ["id", "descripcion", "cantidad", "unidad", "precioUnit", "subtotal", "subpartida", "confidence", "aiSuggested"],
+        "properties": {
+          "id": { "type": "string", "example": "i1" },
+          "descripcion": { "type": "string", "example": "Laptop 14\" Intel Core i5, 8GB RAM, 512GB SSD" },
+          "cantidad": { "type": "number", "example": 20 },
+          "unidad": { "type": "string", "example": "UND" },
+          "precioUnit": { "type": "number", "example": 385.0 },
+          "subtotal": { "type": "number", "example": 7700.0 },
+          "subpartida": {
+            "type": ["string", "null"],
+            "description": "Subpartida asignada; null si el ítem no está clasificado.",
+            "example": "8471.30.00.00"
+          },
+          "confidence": { "$ref": "#/components/schemas/Confidence" },
+          "aiSuggested": {
+            "type": "boolean",
+            "description": "Indica si la subpartida fue sugerida por la IA.",
+            "example": true
+          }
+        }
+      },
+      "FacturaTotales": {
+        "type": "object",
+        "properties": {
+          "subtotal": { "type": "number", "example": 8653.0 },
+          "flete": { "type": "number", "example": 480.0 },
+          "seguro": { "type": "number", "example": 92.0 },
+          "cif": { "type": "number", "description": "Costo, Seguro y Flete.", "example": 9225.0 }
+        }
+      },
+      "Factura": {
+        "type": "object",
+        "required": ["id", "estado", "proveedor", "factura", "items", "totales"],
+        "properties": {
+          "id": { "type": "string", "example": "fac_8f21a" },
+          "estado": { "$ref": "#/components/schemas/FacturaEstado" },
+          "proveedor": { "$ref": "#/components/schemas/FacturaProveedor" },
+          "factura": { "$ref": "#/components/schemas/FacturaCabecera" },
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/FacturaItem" }
+          },
+          "totales": { "$ref": "#/components/schemas/FacturaTotales" }
+        }
+      },
+      "FacturaUpdate": {
+        "type": "object",
+        "description": "Campos editables tras la revisión humana.",
+        "properties": {
+          "proveedor": { "$ref": "#/components/schemas/FacturaProveedor" },
+          "factura": { "$ref": "#/components/schemas/FacturaCabecera" },
+          "totales": { "$ref": "#/components/schemas/FacturaTotales" }
+        }
+      },
+      "Confidence": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 100,
+        "description": "Nivel de confianza de la IA (0–100). Valores bajos se resaltan para revisión.",
+        "example": 94
+      },
+      "Liquidacion": {
+        "type": "object",
+        "description": "Cálculo tributario de la DIMS.",
+        "properties": {
+          "cif": { "type": "number", "description": "Valor CIF en moneda de factura.", "example": 9225.0 },
+          "ga": { "type": "number", "description": "Gravamen Arancelario.", "example": 692.5 },
+          "iva": { "type": "number", "description": "IVA (tasa efectiva 14.94%).", "example": 1481.42 },
+          "ice": { "type": "number", "description": "Impuesto a los Consumos Específicos.", "example": 0 },
+          "totalBob": { "type": "number", "description": "Total a pagar en bolivianos.", "example": 15022.16 }
+        }
+      },
+      "Dims": {
+        "type": "object",
+        "required": ["id", "estado", "proveedor", "fecha"],
+        "properties": {
+          "id": { "type": "string", "example": "DIMS-2026-04823" },
+          "estado": { "$ref": "#/components/schemas/DimsEstado" },
+          "facturaId": { "type": "string", "example": "fac_8f21a" },
+          "proveedor": { "type": "string", "example": "Shenzhen Electronics Co., Ltd." },
+          "fecha": { "type": "string", "format": "date", "example": "2026-05-14" },
+          "nit": { "type": "string", "description": "NIT del importador.", "example": "7234182013" },
+          "aduanaIngreso": { "type": "string", "example": "030" },
+          "regimen": { "type": "string", "example": "IM4" },
+          "modalidad": { "type": "string", "example": "SIMPLIFICADA" },
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/FacturaItem" }
+          },
+          "liquidacion": { "$ref": "#/components/schemas/Liquidacion" },
+          "validacion": { "$ref": "#/components/schemas/ValidationResult" },
+          "creadaEn": { "type": "string", "format": "date-time" },
+          "actualizadaEn": { "type": "string", "format": "date-time" }
+        }
+      },
+      "DimsUpdate": {
+        "type": "object",
+        "description": "Campos editables de una DIMS en borrador.",
+        "properties": {
+          "proveedor": { "type": "string" },
+          "nit": { "type": "string" },
+          "aduanaIngreso": { "type": "string" },
+          "regimen": { "type": "string" },
+          "modalidad": { "type": "string" },
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/FacturaItem" }
+          }
+        }
+      },
+      "ValidationIssue": {
+        "type": "object",
+        "required": ["nivel", "mensaje"],
+        "properties": {
+          "nivel": {
+            "type": "string",
+            "enum": ["error", "advertencia", "info"]
+          },
+          "campo": { "type": "string", "description": "Campo o ítem relacionado.", "example": "items[2].subpartida" },
+          "mensaje": { "type": "string", "example": "La subpartida 8504.40.00.00 requiere certificado adicional." }
+        }
+      },
+      "ValidationResult": {
+        "type": "object",
+        "required": ["valido", "issues"],
+        "properties": {
+          "valido": {
+            "type": "boolean",
+            "description": "true si no hay issues de nivel `error`.",
+            "example": false
+          },
+          "validadaEn": { "type": "string", "format": "date-time" },
+          "issues": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ValidationIssue" }
+          }
+        }
+      },
+      "ExportFormat": {
+        "type": "string",
+        "enum": ["xml", "pdf", "json", "print"],
+        "description": "xml: XML oficial SUMA · pdf: formato oficial AN · json: estructurado para ERP · print: vista de impresión."
+      },
+      "ExportResult": {
+        "type": "object",
+        "required": ["formato", "url"],
+        "properties": {
+          "formato": { "$ref": "#/components/schemas/ExportFormat" },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "URL temporal de descarga.",
+            "example": "https://files.dims.ai/exports/DIMS-2026-04823.xml"
+          },
+          "nombreArchivo": { "type": "string", "example": "DIMS-2026-04823.xml" },
+          "tamanoBytes": { "type": "integer", "example": 24576 },
+          "expiraEn": { "type": "string", "format": "date-time" }
+        }
+      },
+      "LineaId": {
+        "type": "string",
+        "enum": ["blanca", "negra", "electronica"]
+      },
+      "Linea": {
+        "type": "object",
+        "required": ["id", "label", "color"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/LineaId" },
+          "label": { "type": "string", "example": "Línea Blanca" },
+          "color": { "type": "string", "description": "Color de la línea (oklch).", "example": "oklch(0.65 0.07 220)" }
+        }
+      },
+      "Subpartida": {
+        "type": "object",
+        "required": ["code", "desc", "linea", "arancel", "iva", "ice", "gravamen"],
+        "properties": {
+          "code": { "type": "string", "description": "Código de 10 dígitos.", "example": "8471.30.00.00" },
+          "desc": { "type": "string", "example": "Máquinas automáticas para tratamiento de datos, portátiles, peso ≤ 10 kg" },
+          "linea": { "$ref": "#/components/schemas/LineaId" },
+          "arancel": { "type": "number", "description": "Gravamen arancelario (%).", "example": 5 },
+          "iva": { "type": "number", "description": "IVA efectivo (%).", "example": 14.94 },
+          "ice": { "type": "number", "description": "ICE (%).", "example": 0 },
+          "gravamen": { "type": "string", "description": "Resumen de carga tributaria.", "example": "GA 5%" }
+        }
+      },
+      "SubpartidaMatch": {
+        "allOf": [
+          { "$ref": "#/components/schemas/Subpartida" },
+          {
+            "type": "object",
+            "properties": {
+              "score": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": "Puntuación de relevancia semántica.",
+                "example": 0.92
+              },
+              "bestMatch": {
+                "type": "boolean",
+                "description": "true para la mejor coincidencia según la IA.",
+                "example": true
+              }
+            }
+          }
+        ]
+      },
+      "ProductoFavorito": {
+        "type": "object",
+        "required": ["id", "nombre", "codigo", "linea", "ultimoUso", "vecesImportado"],
+        "properties": {
+          "id": { "type": "string", "example": "p1" },
+          "nombre": { "type": "string", "example": "Laptop Lenovo IdeaPad" },
+          "codigo": { "type": "string", "description": "Subpartida asociada.", "example": "8471.30.00.00" },
+          "linea": { "$ref": "#/components/schemas/LineaId" },
+          "ultimoUso": { "type": "string", "example": "hace 3 días" },
+          "vecesImportado": { "type": "integer", "example": 24 }
+        }
+      },
+      "GlosarioTerm": {
+        "type": "object",
+        "required": ["term", "def"],
+        "properties": {
+          "term": { "type": "string", "example": "DIMS" },
+          "def": { "type": "string", "example": "Declaración de Importación de Mercancías Simplificada." }
+        }
+      },
+      "Integracion": {
+        "type": "object",
+        "required": ["id", "name", "desc", "status"],
+        "properties": {
+          "id": { "type": "string", "example": "suma" },
+          "name": { "type": "string", "example": "SUMA Aduana Nacional" },
+          "desc": { "type": "string", "example": "Plataforma oficial para presentación de DIMS" },
+          "status": {
+            "type": "string",
+            "enum": ["connected", "disconnected", "beta"]
+          },
+          "badge": { "type": "string", "example": "Oficial" }
+        }
+      },
+      "ApiKey": {
+        "type": "object",
+        "required": ["id", "label", "entorno", "maskedValue", "creadaEn"],
+        "properties": {
+          "id": { "type": "string", "example": "key_5fb9c8" },
+          "label": { "type": "string", "example": "Producción" },
+          "entorno": {
+            "type": "string",
+            "enum": ["produccion", "sandbox"]
+          },
+          "maskedValue": {
+            "type": "string",
+            "description": "Valor enmascarado de la clave.",
+            "example": "dims_live_••••••••••••••••a72f"
+          },
+          "creadaEn": { "type": "string", "format": "date-time" },
+          "ultimoUso": { "type": "string", "format": "date-time" }
+        }
+      },
+      "WebhookEvent": {
+        "type": "string",
+        "enum": ["dims.created", "dims.updated", "dims.approved", "dims.submitted", "dims.rejected"],
+        "description": "Eventos del ciclo de vida de la DIMS."
+      },
+      "Webhook": {
+        "type": "object",
+        "required": ["id", "url", "events", "activo"],
+        "properties": {
+          "id": { "type": "string", "example": "wh_1" },
+          "url": { "type": "string", "format": "uri", "example": "https://erp.miempresa.bo/webhooks/dims" },
+          "events": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/WebhookEvent" }
+          },
+          "activo": { "type": "boolean", "example": true }
+        }
+      },
+      "SyncEvent": {
+        "type": "object",
+        "required": ["time", "target", "detalle", "ok"],
+        "properties": {
+          "time": { "type": "string", "format": "date-time" },
+          "target": { "type": "string", "description": "Sistema externo.", "example": "ERP Propio" },
+          "detalle": { "type": "string", "example": "12 productos sincronizados" },
+          "ok": { "type": "boolean", "example": true }
+        }
+      }
+    }
+  }
+}

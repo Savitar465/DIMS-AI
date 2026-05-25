@@ -1,133 +1,126 @@
-import { Controller, Get, Post, Query, UploadedFile, UseInterceptors } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
-import { ApiTags, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
-import { BuscarSubpartidasUseCase } from 'src/core/application/usecases/dims/buscar-subpartidas.usecase';
-import { BuscarSubpartidasDesdePdfUseCase } from 'src/core/application/usecases/dims/buscar-subpartidas-desde-pdf.usecase';
-import { DigitalizarFacturaUseCase } from 'src/core/application/usecases/dims/digitalizar-factura.usecase';
-import { ClasificarFacturaUseCase } from 'src/core/application/usecases/dims/clasificar-factura.usecase';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  Param,
+  Post,
+  Put,
+  Query,
+} from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiQuery } from '@nestjs/swagger';
+import { ListDimsUseCase } from '../../../core/application/usecases/dims/list-dims.usecase';
+import { CreateDimsUseCase } from '../../../core/application/usecases/dims/create-dims.usecase';
+import { GetDimsUseCase } from '../../../core/application/usecases/dims/get-dims.usecase';
+import { UpdateDimsUseCase } from '../../../core/application/usecases/dims/update-dims.usecase';
+import { DeleteDimsUseCase } from '../../../core/application/usecases/dims/delete-dims.usecase';
+import { GenerateDimsUseCase } from '../../../core/application/usecases/dims/generate-dims.usecase';
+import { ValidateDimsUseCase } from '../../../core/application/usecases/dims/validate-dims.usecase';
+import { ExportDimsUseCase } from '../../../core/application/usecases/dims/export-dims.usecase';
+import { EmailDimsUseCase } from '../../../core/application/usecases/dims/email-dims.usecase';
+import { SubmitDimsUseCase } from '../../../core/application/usecases/dims/submit-dims.usecase';
+import {
+  CreateDimsDto,
+  DimsUpdateDto,
+  EmailDimsDto,
+  ExportDimsDto,
+} from '../../dto/dims.dto';
 
-@ApiTags('DIMS - Automatización con IA')
+@ApiTags('DIMS')
 @Controller('dims')
 export class DimsController {
   constructor(
-    private readonly buscarSubpartidasUseCase: BuscarSubpartidasUseCase,
-    private readonly buscarSubpartidasDesdePdfUseCase: BuscarSubpartidasDesdePdfUseCase,
-    private readonly digitalizarFacturaUseCase: DigitalizarFacturaUseCase,
-    private readonly clasificarFacturaUseCase: ClasificarFacturaUseCase,
+    private readonly listDimsUseCase: ListDimsUseCase,
+    private readonly createDimsUseCase: CreateDimsUseCase,
+    private readonly getDimsUseCase: GetDimsUseCase,
+    private readonly updateDimsUseCase: UpdateDimsUseCase,
+    private readonly deleteDimsUseCase: DeleteDimsUseCase,
+    private readonly generateDimsUseCase: GenerateDimsUseCase,
+    private readonly validateDimsUseCase: ValidateDimsUseCase,
+    private readonly exportDimsUseCase: ExportDimsUseCase,
+    private readonly emailDimsUseCase: EmailDimsUseCase,
+    private readonly submitDimsUseCase: SubmitDimsUseCase,
   ) {}
 
-  @Get('subpartidas')
-  @ApiOperation({ summary: 'HU-001: Búsqueda de Subpartidas Arancelarias con IA' })
-  async buscarSubpartidas(
-    @Query('q') query: string,
-    @Query('linea') linea?: string,
+  @Get()
+  @ApiOperation({ summary: 'Listar DIMS' })
+  @ApiQuery({ name: 'estado', required: false })
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'pageSize', required: false })
+  async list(
+    @Query('estado') estado?: string,
+    @Query('q') q?: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
   ) {
-    try {
-      return await this.buscarSubpartidasUseCase.execute(query, linea);
-    } catch (err) {
-      return { error: 'Error buscando subpartidas', message: (err as Error)?.message };
-    }
+    return this.listDimsUseCase.execute({
+      estado,
+      q,
+      page: page ? parseInt(page, 10) : undefined,
+      pageSize: pageSize ? parseInt(pageSize, 10) : undefined,
+    });
   }
 
-  @Post('digitalizar-factura')
-  @ApiOperation({ summary: 'HU-003: Digitalización de Facturas (PDF/Imagen)' })
-  @ApiConsumes('multipart/form-data')
-  @ApiBody({
-    schema: {
-      type: 'object',
-      properties: {
-        file: {
-          type: 'string',
-          format: 'binary',
-        },
-      },
-    },
-  })
-  @UseInterceptors(FileInterceptor('file'))
-  async digitalizarFactura(@UploadedFile() file: Express.Multer.File, @Query('debug') debug?: string) {
-    try {
-      const debugFlag = debug === 'true';
-      return await this.digitalizarFacturaUseCase.execute(file.buffer, file.mimetype, debugFlag);
-    } catch (err) {
-      return {
-        proveedor: 'Error en extracción',
-        valorTotal: 0,
-        productos: [{ descripcion: (err as Error)?.message || 'No se pudo extraer data', cantidad: 0, valorUnitario: 0, valorTotal: 0 }]
-      };
-    }
+  @Post()
+  @HttpCode(201)
+  @ApiOperation({ summary: 'Crear una DIMS' })
+  async create(@Body() body: CreateDimsDto) {
+    return this.createDimsUseCase.execute(body);
   }
 
-  @Post('digitalizar-factura-imagen')
-  @ApiOperation({ summary: 'HU-003b: Digitalización de Facturas (solo imagen)' })
-  @ApiConsumes('multipart/form-data')
-  @ApiBody({
-    schema: {
-      type: 'object',
-      properties: {
-        file: {
-          type: 'string',
-          format: 'binary',
-        },
-      },
-    },
-  })
-  @UseInterceptors(FileInterceptor('file'))
-  async digitalizarFacturaImagen(@UploadedFile() file: Express.Multer.File, @Query('debug') debug?: string) {
-    try {
-      const debugFlag = debug === 'true';
-      // Delegate to the same use case; the service will handle OCR for images
-      return await this.digitalizarFacturaUseCase.execute(file.buffer, file.mimetype, debugFlag);
-    } catch (err) {
-      return {
-        proveedor: 'Error en extracción',
-        valorTotal: 0,
-        productos: [{ descripcion: (err as Error)?.message || 'No se pudo extraer data', cantidad: 0, valorUnitario: 0, valorTotal: 0 }]
-      };
-    }
+  @Get(':dimsId')
+  @ApiOperation({ summary: 'Obtener una DIMS' })
+  async get(@Param('dimsId') dimsId: string) {
+    return this.getDimsUseCase.execute(dimsId);
   }
 
-  @Post('clasificar-factura')
-  @ApiOperation({ summary: 'HU-004: Clasificar productos de una factura con subpartidas arancelarias' })
-  @ApiConsumes('multipart/form-data')
-  @ApiBody({
-    schema: {
-      type: 'object',
-      properties: {
-        file: { type: 'string', format: 'binary' },
-      },
-    },
-  })
-  @UseInterceptors(FileInterceptor('file'))
-  async clasificarFactura(@UploadedFile() file: Express.Multer.File, @Query('debug') debug?: string) {
-    try {
-      const debugFlag = debug === 'true';
-      // Delegate classification to the new use case
-      return await this.clasificarFacturaUseCase.execute(file.buffer, file.mimetype, debugFlag);
-    } catch (err) {
-      return { error: 'Error clasificando factura', message: (err as Error)?.message };
-    }
+  @Put(':dimsId')
+  @ApiOperation({ summary: 'Actualizar una DIMS' })
+  async update(@Param('dimsId') dimsId: string, @Body() body: DimsUpdateDto) {
+    return this.updateDimsUseCase.execute(dimsId, body);
   }
 
-  @Post('buscar-subpartidas-pdf')
-  @ApiOperation({ summary: 'Sugerir subpartidas desde PDF de factura' })
-  @ApiConsumes('multipart/form-data')
-  @ApiBody({
-    schema: {
-      type: 'object',
-      properties: {
-        file: {
-          type: 'string',
-          format: 'binary',
-        },
-      },
-    },
-  })
-  @UseInterceptors(FileInterceptor('file'))
-  async buscarDesdePdf(@UploadedFile() file: Express.Multer.File) {
-    try {
-      return await this.buscarSubpartidasDesdePdfUseCase.execute(file.buffer, file.mimetype);
-    } catch (err) {
-      return { error: 'Error procesando PDF', message: (err as Error)?.message };
-    }
+  @Delete(':dimsId')
+  @HttpCode(204)
+  @ApiOperation({ summary: 'Eliminar una DIMS' })
+  async remove(@Param('dimsId') dimsId: string) {
+    await this.deleteDimsUseCase.execute(dimsId);
+  }
+
+  @Post(':dimsId/generate')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Generar el formulario y la liquidación' })
+  async generate(@Param('dimsId') dimsId: string) {
+    return this.generateDimsUseCase.execute(dimsId);
+  }
+
+  @Post(':dimsId/validate')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Validar contra SUMA' })
+  async validate(@Param('dimsId') dimsId: string) {
+    return this.validateDimsUseCase.execute(dimsId);
+  }
+
+  @Post(':dimsId/export')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Exportar la DIMS' })
+  async export(@Param('dimsId') dimsId: string, @Body() body: ExportDimsDto) {
+    return this.exportDimsUseCase.execute(dimsId, body.formato);
+  }
+
+  @Post(':dimsId/email')
+  @HttpCode(202)
+  @ApiOperation({ summary: 'Enviar la DIMS por correo' })
+  async email(@Param('dimsId') dimsId: string, @Body() body: EmailDimsDto) {
+    await this.emailDimsUseCase.execute(dimsId, body.destinatario, body.formato);
+  }
+
+  @Post(':dimsId/submit')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Transmitir la DIMS a SUMA' })
+  async submit(@Param('dimsId') dimsId: string) {
+    return this.submitDimsUseCase.execute(dimsId);
   }
 }

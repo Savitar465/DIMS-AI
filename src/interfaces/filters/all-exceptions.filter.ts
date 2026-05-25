@@ -47,11 +47,48 @@ export class AllExceptionsFilter implements ExceptionFilter {
       this.logger.log(logMessage); 
     }
 
-    response.status(status).json({
-      statusCode: status,
-      timestamp: new Date().toISOString(),
-      path: request.url,
-      message: typeof message === this.OBJECT ? JSON.stringify(message) : message
-    });
+    response.status(status).json(this.toErrorBody(status, message));
+  }
+
+  // Normalize any thrown error into the OpenAPI `Error` schema: { error: { code, message, details? } }.
+  private toErrorBody(status: number, message: unknown): any {
+    if (
+      message &&
+      typeof message === this.OBJECT &&
+      typeof (message as any).error === this.OBJECT &&
+      (message as any).error !== null
+    ) {
+      // Already in the expected shape (thrown by our use cases).
+      return { error: (message as any).error };
+    }
+
+    const code = this.statusToCode(status);
+
+    if (message && typeof message === this.OBJECT) {
+      const m = message as any;
+      const inner = m.message;
+      if (Array.isArray(inner)) {
+        return {
+          error: { code, message: 'Solicitud inválida.', details: inner },
+        };
+      }
+      return { error: { code, message: inner ?? 'Error' } };
+    }
+
+    return { error: { code, message: String(message ?? 'Error') } };
+  }
+
+  private statusToCode(status: number): string {
+    const map: Record<number, string> = {
+      400: 'bad_request',
+      401: 'unauthorized',
+      403: 'forbidden',
+      404: 'not_found',
+      409: 'conflict',
+      413: 'payload_too_large',
+      415: 'unsupported_media_type',
+      500: 'internal_error',
+    };
+    return map[status] ?? 'error';
   }
 }
