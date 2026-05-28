@@ -1,7 +1,20 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { AIService } from 'src/core/domain/ports/outbound/ai.service';
+import {
+  AIService,
+  ClasificacionItemInput,
+  ClasificacionItemOutput,
+} from 'src/core/domain/ports/outbound/ai.service';
 import { Factura } from 'src/core/domain/models/factura';
+import { Subpartida } from 'src/core/domain/models/subpartida';
+
+// Stopwords cortas para el tokenizador del pre-filtro. No es exhaustiva — solo
+// filtra ruido evidente que no aporta a buscar candidatos arancelarios.
+const STOPWORDS = new Set([
+  'para', 'con', 'sin', 'del', 'los', 'las', 'una', 'uno', 'unos', 'unas',
+  'que', 'por', 'mas', 'pero', 'como', 'este', 'esta', 'estos', 'estas',
+  'and', 'the', 'for', 'with', 'from', 'pcs', 'und', 'unit', 'units',
+]);
 import {
   SUBPARTIDA_REPOSITORY,
   SubpartidaRepository,
@@ -303,8 +316,14 @@ class GeminiClient {
 
 @Injectable()
 export class LangChainAIService implements AIService {
-  // Use a loose type so we can support multiple client shapes (LangChain ChatOpenAI or our Gemini wrapper)
+  // Two clients with different cost/capability profiles:
+  //   `model`     → multimodal (image+text). Used para extracción visual de la factura.
+  //   `textModel` → solo texto, modelo más barato. Used para clasificación de subpartidas
+  //                 y búsqueda manual, donde no se necesita visión.
+  // En el típico Gemini 2.5: flash (multimodal) vs flash-lite (~5× más barato, solo texto).
+  // Si solo hay un OPENAI_API_KEY clásico se reusa la misma instancia para ambos.
   private readonly model: any;
+  private readonly textModel: any;
 
   constructor(
     @Inject(SUBPARTIDA_REPOSITORY)
@@ -325,153 +344,24 @@ export class LangChainAIService implements AIService {
     }
 
     if (geminiKey) {
-      // Default to a Gemini model that supports v1beta generateContent (matches common public models)
-      const geminiModel =
+      const visionModel =
         this.configService.get<string>('GEMINI_MODEL') || 'gemini-2.5-flash';
-      this.model = new GeminiClient(geminiKey, geminiModel);
+      const textModel =
+        this.configService.get<string>('GEMINI_TEXT_MODEL') ||
+        'gemini-2.5-flash-lite';
+      this.model = new GeminiClient(geminiKey, visionModel);
+      this.textModel =
+        textModel === visionModel
+          ? this.model
+          : new GeminiClient(geminiKey, textModel);
     } else {
       const apiKey = this.configService.get<string>('OPENAI_API_KEY');
       this.model = new ChatOpenAI({
         openAIApiKey: apiKey,
         temperature: 0,
       });
-    }
-  }
-
-  async buscarSubpartidas(
-    descripcion: string,
-    contexto?: { linea?: string },
-  ): Promise<any[]> {
-    console.log(
-      `[AI Search] Buscando: ${descripcion} con linea: ${contexto?.linea}`,
-    );
-
-    // Obtener todas las subpartidas disponibles para que el LLM decida
-    const subpartidasDisponibles = await this.subpartidaRepository.findAll();
-
-    const parser = StructuredOutputParser.fromZodSchema(
-      z.array(
-        z.object({
-          code: z.string().describe('Código de la subpartida (10 dígitos)'),
-          razon: z
-            .string()
-            .describe('Razón por la cual esta subpartida es relevante'),
-          score: z
-            .number()
-            .describe('Puntuación de relevancia semántica entre 0 y 1'),
-        }),
-      ),
-    );
-
-    const prompt = new PromptTemplate({
-      template: `Eres un experto en comercio exterior y clasificación arancelaria NANDINA (Bolivia). Tu tarea es encontrar las subpartidas más adecuadas para el siguiente producto.
-Producto: "{descripcion}"
-Línea solicitada (opcional): {linea}
-
-Subpartidas disponibles:
-{subpartidas}
-
-INSTRUCCIONES IMPORTANTES:
-- Devuelve ÚNICAMENTE un JSON válido y nada más.
-- El JSON debe ser un ARRAY de objetos ordenados de mayor a menor relevancia: [{{ "code": "8471.30.00.00", "razon": "Texto explicativo", "score": 0.92 }} , ...]
-- Usa SOLO los códigos (campo "code") que aparecen en la lista de subpartidas disponibles.
-- "score" es un número entre 0 y 1 que representa la confianza de la coincidencia.
-- Si no hay coincidencias exactas, incluye las subpartidas más cercanas con un score más bajo.
-
-Usa las siguientes instrucciones de formato para asegurar la salida JSON:
-{format_instructions}
-`,
-      inputVariables: ['descripcion', 'linea', 'subpartidas'],
-      partialVariables: { format_instructions: parser.getFormatInstructions() },
-    });
-
-    const input = await prompt.format({
-      descripcion,
-      linea: contexto?.linea || 'No especificada',
-      subpartidas: JSON.stringify(subpartidasDisponibles),
-    });
-
-    try {
-      // Call the model (no inline image for this use-case)
-      const response = await this.model.invoke(input);
-      const contentStr = this.normalizeModelResponse(response);
-      console.log(`[AI Search] Normalized LLM response length: ${contentStr?.length}`);
-      console.log(`[AI Search] Normalized LLM response (truncated): ${contentStr?.slice(0, 1000)}`);
-
-      // Try to parse the response using the StructuredOutputParser (preferred)
-      let parsed: any = null;
-      try {
-        const sanitized = this.sanitizeModelJSONArray(contentStr);
-        parsed = await parser.parse(sanitized);
-      } catch (parseErr) {
-        console.warn('[AI Search] StructuredOutputParser.parse failed, attempting JSON-extraction fallback');
-        try {
-          // Sanitize the model response first (removes code fences, unescapes sequences)
-          const sanitized = this.sanitizeModelJSONArray(contentStr);
-
-          // If sanitized already looks like a JSON array, try parsing directly
-          const sTrim = (sanitized ?? '').trim();
-          if (sTrim.startsWith('[')) {
-            try {
-              const parsedArray = JSON.parse(sTrim);
-              if (Array.isArray(parsedArray)) parsed = parsedArray;
-            } catch (e) {
-              // fallthrough to bracket-extraction below
-            }
-          }
-
-          if (!parsed) {
-            // Find first '[' and last ']' in sanitized and try to extract
-            const first = sanitized.indexOf('[');
-            const last = sanitized.lastIndexOf(']');
-            if (first !== -1 && last !== -1 && last > first) {
-              let arrCandidate = sanitized.slice(first, last + 1).trim();
-
-              // Remove surrounding quotes if present
-              if ((arrCandidate.startsWith('"') && arrCandidate.endsWith('"')) || (arrCandidate.startsWith("'") && arrCandidate.endsWith("'"))) {
-                arrCandidate = arrCandidate.slice(1, -1).trim();
-              }
-
-              // Repeatedly unescape common sequences to handle double-escaped JSON
-              let prev: string | null = null;
-              let attempts = 0;
-              while (arrCandidate !== prev && attempts < 6) {
-                prev = arrCandidate;
-                arrCandidate = arrCandidate
-                  .replace(/\\r/g, '')
-                  .replace(/\\n/g, '\n')
-                  .replace(/\\t/g, ' ')
-                  .replace(/\\"/g, '"')
-                  .replace(/\\'/g, "'")
-                  .replace(/\\\\/g, '\\')
-                  .trim();
-                attempts++;
-              }
-
-              try {
-                const parsedArray = JSON.parse(arrCandidate);
-                if (Array.isArray(parsedArray)) parsed = parsedArray;
-              } catch (e) {
-                console.warn('[AI Search] JSON-extraction fallback failed parsing array candidate:', e);
-              }
-            }
-          }
-        } catch (e) {
-          console.warn('[AI Search] JSON-extraction fallback failed:', e);
-        }
-      }
-
-      if (Array.isArray(parsed)) {
-        // Ensure result is a plain array of objects that can be serialized as JSON
-        return parsed;
-      }
-
-      // Fallback: return repository search results if LLM parsing failed
-      return this.subpartidaRepository.search(descripcion, contexto?.linea);
-    } catch (error) {
-      console.error('[AI Search] Error calling LLM:', error);
-      // Fallback a búsqueda simple si el LLM falla
-      return this.subpartidaRepository.search(descripcion, contexto?.linea);
+      // OpenAI: reusamos el mismo cliente; el ahorro por modelo no aplica aquí.
+      this.textModel = this.model;
     }
   }
 
@@ -681,175 +571,171 @@ INSTRUCCIÓN IMPORTANTE: Genera únicamente un JSON válido con la siguiente est
     }
   }
 
-  async clasificarProductosDesdeFactura(fileBuffer: Buffer, mimeType: string, debug?: boolean): Promise<Partial<Factura> & { debug?: any }> {
-    let text: string | undefined;
-    let imageBase64: string | undefined;
+  async clasificarSubpartidasBatch(
+    items: ClasificacionItemInput[],
+  ): Promise<ClasificacionItemOutput[]> {
+    if (!items || items.length === 0) return [];
 
-    if (mimeType === 'application/pdf') {
-      const data = await pdf(fileBuffer);
-      text = data.text;
-    } else if (/^image\//.test(mimeType)) {
-      imageBase64 = fileBuffer.toString('base64');
-    } else {
-      text = fileBuffer.toString('utf-8');
-    }
+    // OPTIMIZACIÓN #2 — Pre-filtro top-K:
+    // En vez de mandar el catálogo completo (~miles de subpartidas) en cada
+    // llamada, hacemos una búsqueda local por ítem y mandamos solo los K
+    // candidatos más probables. El LLM elige entre esos o "ninguno".
+    // Reduce el input de ~50 k tokens a ~2 k.
+    const K = 8;
+    const candidatesByItem = await this.getCandidatesPorItem(items, K);
 
-    const subpartidasDisponibles = await this.subpartidaRepository.findAll();
+    const sinCandidatos: ClasificacionItemOutput[] = [];
+    const itemsAClasificar = items.filter((it) => {
+      const cs = candidatesByItem.get(it.id) || [];
+      if (cs.length === 0) {
+        sinCandidatos.push({
+          id: it.id,
+          subpartida: null,
+          confidence: 0,
+          razon: 'Sin candidatos en el catálogo para esta descripción',
+        });
+        return false;
+      }
+      return true;
+    });
+
+    if (itemsAClasificar.length === 0) return sinCandidatos;
 
     const parser = StructuredOutputParser.fromZodSchema(
-      z.object({
-        proveedor: z.string().nullable(),
-        fecha: z.string().nullable(),
-        moneda: z.string().nullable(),
-        valorTotal: z.number().nullable(),
-        productos: z.array(
-          z.object({
-            descripcion: z.string(),
-            cantidad: z.number().nullable(),
-            valorUnitario: z.number().nullable(),
-            valorTotal: z.number().nullable(),
-            subpartida: z.union([
-              z.object({ code: z.string().optional(), razon: z.string().optional() }),
-              z.literal('sin clasificacion'),
-            ]),
-          }),
-        ),
-      }),
+      z.array(
+        z.object({
+          id: z.string(),
+          subpartida: z.string().nullable(),
+          confidence: z.number(),
+          razon: z.string().optional(),
+        }),
+      ),
     );
 
-    const template = `Eres un experto en comercio exterior. Tu tarea es:
-1. Analizar una factura (imagen o texto)
-2. Extraer los datos de la factura: proveedor, fecha, moneda, valorTotal
-3. Listar todos los productos con: descripcion, cantidad, valorUnitario, valorTotal
-4. Clasificar cada producto con su subpartida arancelaria más adecuada de la lista disponible
+    // Render compacto: por ítem, su descripción + sus K candidatos.
+    const renderProductos = itemsAClasificar
+      .map((it) => {
+        const cands = (candidatesByItem.get(it.id) || [])
+          .map((c) => `  • ${c.code} — ${c.desc}`)
+          .join('\n');
+        return `PRODUCTO id="${it.id}"\nDescripción: ${it.descripcion}\nCandidatos:\n${cands}`;
+      })
+      .join('\n\n');
 
-INSTRUCCIÓN CRÍTICA: 
-- Devuelve ÚNICAMENTE un JSON válido, sin texto adicional, sin explicaciones, sin código de marcado.
-- El JSON debe ser parseable directamente por JSON.parse()
-- Para clasificar cada producto usa el campo "code" de la subpartida elegida: "subpartida": {{ "code": "8471.30.00.00", "razon": "..." }}
-- Usa SOLO los códigos (campo "code") que aparecen en la lista de subpartidas disponibles.
-- Si un producto no coincide con ninguna subpartida, usa exactamente "sin clasificacion"
-- NO incluyas caracteres especiales sin escapar dentro de strings JSON
-- NO uses saltos de línea en el JSON, usa espacios en su lugar
+    const template = `Eres un experto en clasificación arancelaria NANDINA (Bolivia). Para cada producto elige UNA subpartida de SU lista de candidatos. Si ninguno corresponde, usa null.
 
-Subpartidas disponibles:
-{subpartidas}
+{productos}
+
+INSTRUCCIONES CRÍTICAS:
+- Devuelve ÚNICAMENTE un JSON válido (array), sin texto adicional, sin markdown, sin code fences.
+- Devuelve EXACTAMENTE una entrada por cada producto recibido, preservando su "id".
+- "subpartida" DEBE ser uno de los códigos listados como candidatos para ese ítem, o null.
+- "confidence" es un entero entre 0 y 100.
+- "razon" es opcional, breve justificación en español.
+
+Formato de salida:
+[
+  {{ "id": "i1", "subpartida": "8471.30.00.00", "confidence": 92, "razon": "Laptop portátil" }},
+  {{ "id": "i2", "subpartida": null, "confidence": 0, "razon": "Ningún candidato corresponde" }}
+]
 
 {format_instructions}`;
 
     const prompt = new PromptTemplate({
       template,
-      inputVariables: ['subpartidas', 'text'],
+      inputVariables: ['productos'],
       partialVariables: { format_instructions: parser.getFormatInstructions() },
     });
 
-    const input = await prompt.format({ subpartidas: JSON.stringify(subpartidasDisponibles), text: text ?? '' });
+    const input = await prompt.format({ productos: renderProductos });
+
+    const emptyResult = (): ClasificacionItemOutput[] => [
+      ...sinCandidatos,
+      ...itemsAClasificar.map((it) => ({
+        id: it.id,
+        subpartida: null as string | null,
+        confidence: 0,
+      })),
+    ];
 
     try {
-      let response: any;
-      if (imageBase64 && this.model instanceof GeminiClient) {
-        response = await this.model.invoke(input, { mime_type: mimeType, data: imageBase64 });
-      } else {
-        response = await this.model.invoke(input);
+      // Clasificación = solo texto → modelo barato.
+      const response = await this.textModel.invoke(input);
+      const contentStr = this.unwrapTextEnvelope(
+        this.normalizeModelResponse(response),
+      );
+      console.log(
+        `[AI Classify] Normalized LLM response length: ${contentStr?.length}`,
+      );
+
+      let parsed: any = this.tryParseJSON(contentStr);
+      // Defensive: if the parser returned the [{text:"..."}] envelope, drill in.
+      if (
+        Array.isArray(parsed) &&
+        parsed.length > 0 &&
+        parsed.every(
+          (p) => p && typeof p === 'object' && typeof p.text === 'string',
+        )
+      ) {
+        const joined = parsed.map((p) => p.text).join('');
+        parsed = this.tryParseJSON(joined);
       }
-
-      const contentStr = this.normalizeModelResponse(response);
-      if (debug) console.debug('[AI classify] normalized response:', contentStr?.slice(0, 2000));
-
-      // Try multiple parsing strategies
-      let parsed: any = null;
-
-      // Strategy 1: Try the loose regex-based parser FIRST (best for handling messy JSON)
-      try {
-        const looseParsed = this.parseFacturaLoose(contentStr);
-        if (looseParsed && looseParsed.productos && looseParsed.productos.length > 0) {
-          parsed = looseParsed;
-          if (debug) console.debug('[AI classify] Successfully parsed using loose parser');
-        }
-      } catch (e) {
-        if (debug) console.debug('[AI classify] Loose parser failed, trying other strategies');
-      }
-
-      // Strategy 2: If loose parser didn't work, try robust JSON parsing
-      if (!parsed) {
-        parsed = this.tryParseJSON(contentStr);
-        if (parsed && debug) console.debug('[AI classify] Successfully parsed using tryParseJSON');
-      }
-
-      // Strategy 3: Try the structured parser as final attempt
-      if (!parsed) {
+      if (!Array.isArray(parsed)) {
         try {
-          const sanitized = this.sanitizeModelJSON(contentStr);
+          const sanitized = this.sanitizeModelJSONArray(contentStr);
           parsed = await parser.parse(sanitized);
-          if (debug) console.debug('[AI classify] Successfully parsed using StructuredOutputParser');
-        } catch (err) {
-          if (debug) console.debug('[AI classify] StructuredOutputParser failed:', err);
+        } catch (e) {
+          console.warn('[AI Classify] StructuredOutputParser failed:', e);
         }
       }
 
-      // If we got a valid parsed object, return it
-      if (parsed && typeof parsed === 'object') {
-        return parsed as Partial<Factura> & { debug?: any };
+      if (!Array.isArray(parsed)) {
+        console.warn('[AI Classify] Could not parse response — returning empty classifications');
+        return emptyResult();
       }
 
-      // Final fallback: return empty result
-      if (debug) console.warn('[AI classify] All parsing strategies failed, returning empty result');
-      return { proveedor: null, fecha: null, moneda: null, valorTotal: null, productos: [] };
-    } catch (error) {
-      console.error('[AI classify] Error calling LLM:', error);
-      return { proveedor: null, fecha: null, moneda: null, valorTotal: null, productos: [] };
-    }
-  }
-
-  // Very forgiving parser: extracts factura fields and products from pretty-printed JSON-like text
-  private parseFacturaLoose(text: string): Partial<Factura> | null {
-    if (!text || typeof text !== 'string') return null;
-    // Try to find proveedor, fecha, moneda, valorTotal
-    const getString = (key: string) => {
-      const re = new RegExp(`"${key}"\s*:\s*"([^"]*)"`, 'i');
-      const m = text.match(re);
-      return m ? m[1] : null;
-    };
-    const getNumber = (key: string) => {
-      const re = new RegExp(`"${key}"\s*:\s*([0-9]+(?:\.[0-9]+)?)`, 'i');
-      const m = text.match(re);
-      return m ? Number(m[1]) : null;
-    };
-
-    const proveedor = getString('proveedor');
-    const fecha = getString('fecha');
-    const moneda = getString('moneda') || getString('currency');
-    const valorTotal = getNumber('valorTotal');
-
-    // Extract products block
-    const productsBlockMatch = text.match(/"productos"\s*:\s*\[([\s\S]*?)]/i);
-    const productos: any[] = [];
-    if (productsBlockMatch && productsBlockMatch[1]) {
-      const inner = productsBlockMatch[1];
-      // Match individual product objects { ... }
-      const objRe = /{([\s\S]*?)}/g;
-      let m: RegExpExecArray | null;
-      while ((m = objRe.exec(inner))) {
-        const objText = m[1];
-        const descripcionMatch = objText.match(/"descripcion"\s*:\s*"([^"]*)"/i);
-        const cantidadMatch = objText.match(/"cantidad"\s*:\s*([0-9]+)/i);
-        const vuMatch = objText.match(/"valorUnitario"\s*:\s*([0-9]+(?:\.[0-9]+)?)/i);
-        const vtMatch = objText.match(/"valorTotal"\s*:\s*([0-9]+(?:\.[0-9]+)?)/i);
-        const subMatch = objText.match(/"subpartida"\s*:\s*(?:"([^"]*)"|([A-Za-z0-9_\- ]+))/i);
-        const descripcion = descripcionMatch ? descripcionMatch[1] : '';
-        const cantidad = cantidadMatch ? Number(cantidadMatch[1]) : null;
-        const valorUnitario = vuMatch ? Number(vuMatch[1]) : null;
-        const valorTotal = vtMatch ? Number(vtMatch[1]) : null;
-        let subpartida: any = null;
-        if (subMatch) {
-          subpartida = subMatch[1] ?? subMatch[2] ?? null;
+      const byId = new Map<string, any>();
+      for (const r of parsed) {
+        if (r && typeof r === 'object' && typeof r.id === 'string') {
+          byId.set(r.id, r);
         }
-        productos.push({ descripcion, cantidad, valorUnitario, valorTotal, subpartida });
       }
+      // Validar que la subpartida elegida esté en los candidatos del ítem
+      // (defiende contra alucinaciones del LLM).
+      const aiResults: ClasificacionItemOutput[] = itemsAClasificar.map(
+        (it) => {
+          const r = byId.get(it.id);
+          if (!r) return { id: it.id, subpartida: null, confidence: 0 };
+          const candCodes = new Set(
+            (candidatesByItem.get(it.id) || []).map((c) => c.code),
+          );
+          const raw =
+            typeof r.subpartida === 'string' && r.subpartida.trim() !== ''
+              ? r.subpartida
+              : null;
+          const sub = raw && candCodes.has(raw) ? raw : null;
+          const conf = Number(r.confidence);
+          return {
+            id: it.id,
+            subpartida: sub,
+            confidence: Number.isFinite(conf)
+              ? Math.max(0, Math.min(100, conf))
+              : 0,
+            razon: typeof r.razon === 'string' ? r.razon : undefined,
+          };
+        },
+      );
+      // Mantener el orden de la entrada original.
+      const merged = new Map<string, ClasificacionItemOutput>();
+      for (const r of [...sinCandidatos, ...aiResults]) merged.set(r.id, r);
+      return items.map(
+        (it) =>
+          merged.get(it.id) || { id: it.id, subpartida: null, confidence: 0 },
+      );
+    } catch (err) {
+      console.error('[AI Classify] Error calling LLM:', err);
+      return emptyResult();
     }
-
-    if (!proveedor && !fecha && productos.length === 0) return null;
-    return { proveedor: proveedor ?? null, fecha: fecha ?? null, moneda: moneda ?? null, valorTotal: valorTotal ?? null, productos };
   }
 
   // Clean a JSON-like string to increase the chance JSON.parse will succeed.
@@ -1140,15 +1026,83 @@ Subpartidas disponibles:
       // Continue to next strategy
     }
 
-    // Strategy 6: Try the loose regex-based parser as last resort
-    try {
-      if (text.includes('"proveedor"')) {
-        return this.parseFacturaLoose(text);
-      }
-    } catch (e) {
-      // Continue
-    }
-
     return null;
+  }
+
+  // OPTIMIZACIÓN #2 — Tokeniza la descripción para buscar candidatos vía LIKE.
+  // Normaliza acentos, baja a minúsculas, descarta tokens cortos y stopwords.
+  private tokenizar(text: string): string[] {
+    if (!text) return [];
+    const norm = text
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '');
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const t of norm.split(/[^a-z0-9]+/)) {
+      if (t.length < 3 || STOPWORDS.has(t) || seen.has(t)) continue;
+      seen.add(t);
+      out.push(t);
+    }
+    return out;
+  }
+
+  // OPTIMIZACIÓN #2 — Para cada ítem, encuentra los top-K candidatos
+  // arancelarios usando el repositorio local. Score = nº de tokens que
+  // matchean la descripción del candidato.
+  private async getCandidatesPorItem(
+    items: ClasificacionItemInput[],
+    k: number,
+  ): Promise<Map<string, Subpartida[]>> {
+    const result = new Map<string, Subpartida[]>();
+    for (const item of items) {
+      const tokens = this.tokenizar(item.descripcion);
+      const scored = new Map<string, { sub: Subpartida; score: number }>();
+      for (const t of tokens) {
+        const hits = await this.subpartidaRepository.search(t);
+        for (const h of hits) {
+          const prev = scored.get(h.code);
+          if (prev) prev.score += 1;
+          else scored.set(h.code, { sub: h, score: 1 });
+        }
+      }
+      const ranked = [...scored.values()]
+        .sort((a, b) => b.score - a.score)
+        .slice(0, k)
+        .map((x) => x.sub);
+      result.set(item.id, ranked);
+    }
+    return result;
+  }
+
+  // Some LLM clients (notably the Gemini wrapper here) return the JSON answer
+  // wrapped as `[{"text":"<actual json>"}]`. Drill through that envelope so
+  // downstream parsers see the actual JSON the model produced.
+  private unwrapTextEnvelope(raw: string): string {
+    if (!raw || typeof raw !== 'string') return raw;
+    const trimmed = raw.trim();
+    if (!trimmed.startsWith('[') && !trimmed.startsWith('{')) return raw;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (
+        Array.isArray(parsed) &&
+        parsed.length > 0 &&
+        parsed.every(
+          (p) => p && typeof p === 'object' && typeof p.text === 'string',
+        )
+      ) {
+        return parsed.map((p: any) => p.text).join('');
+      }
+      if (
+        parsed &&
+        typeof parsed === 'object' &&
+        typeof parsed.text === 'string'
+      ) {
+        return parsed.text;
+      }
+    } catch {
+      // not JSON — leave as-is
+    }
+    return raw;
   }
 }

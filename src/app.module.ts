@@ -8,6 +8,7 @@ import { DimsModule } from './dims.module';
 import { SubpartidaEntity } from './infraestructure/persistance/entities/subpartida.entity';
 import { FacturaEntity } from './infraestructure/persistance/entities/factura.entity';
 import { DimsEntity } from './infraestructure/persistance/entities/dims.entity';
+import { ClasificacionCacheEntity } from './infraestructure/persistance/entities/clasificacion-cache.entity';
 
 @Global()
 @Module({
@@ -24,10 +25,20 @@ import { DimsEntity } from './infraestructure/persistance/entities/dims.entity';
       },
     }),
     TypeOrmModule.forRoot({
-      type: 'better-sqlite3',
-      database: process.env.DATABASE_PATH || 'dims.sqlite',
-      entities: [SubpartidaEntity, FacturaEntity, DimsEntity],
+      type: 'postgres',
+      host: process.env.DATABASE_HOST || 'localhost',
+      port: parseInt(process.env.DATABASE_PORT, 10) || 5432,
+      username: process.env.DATABASE_USER,
+      password: process.env.DATABASE_PASSWORD,
+      database: process.env.DATABASE_NAME,
+      entities: [
+        SubpartidaEntity,
+        FacturaEntity,
+        DimsEntity,
+        ClasificacionCacheEntity,
+      ],
       synchronize: true,
+      ssl: { rejectUnauthorized: false },
     }),
     // Configure pino logger: enable human-friendly `pino-pretty` only in development.
     LoggerModule.forRoot((() => {

@@ -5,20 +5,25 @@ import { SUBPARTIDA_REPOSITORY } from 'src/core/domain/ports/outbound/subpartida
 import { FACTURA_REPOSITORY } from 'src/core/domain/ports/outbound/factura.repository';
 import { DIMS_REPOSITORY } from 'src/core/domain/ports/outbound/dims.repository';
 import { AI_SERVICE } from 'src/core/domain/ports/outbound/ai.service';
+import { CLASIFICACION_CACHE_REPOSITORY } from 'src/core/domain/ports/outbound/clasificacion-cache.repository';
 
 import { SubpartidaEntity } from 'src/infraestructure/persistance/entities/subpartida.entity';
 import { FacturaEntity } from 'src/infraestructure/persistance/entities/factura.entity';
 import { DimsEntity } from 'src/infraestructure/persistance/entities/dims.entity';
+import { ClasificacionCacheEntity } from 'src/infraestructure/persistance/entities/clasificacion-cache.entity';
 
 import { TypeOrmSubpartidaRepository } from 'src/infraestructure/persistance/repositories/typeorm-subpartida.repository';
 import { TypeOrmFacturaRepository } from 'src/infraestructure/persistance/repositories/typeorm-factura.repository';
 import { TypeOrmDimsRepository } from 'src/infraestructure/persistance/repositories/typeorm-dims.repository';
+import { TypeOrmClasificacionCacheRepository } from 'src/infraestructure/persistance/repositories/typeorm-clasificacion-cache.repository';
 import { LangChainAIService } from 'src/infraestructure/adapters/domain/langchain-ai.service';
 
 import { UploadFacturaUseCase } from 'src/core/application/usecases/facturas/upload-factura.usecase';
 import { GetFacturaUseCase } from 'src/core/application/usecases/facturas/get-factura.usecase';
 import { UpdateFacturaUseCase } from 'src/core/application/usecases/facturas/update-factura.usecase';
 import { UpdateFacturaItemUseCase } from 'src/core/application/usecases/facturas/update-factura-item.usecase';
+import { ClasificarSubpartidasUseCase } from 'src/core/application/usecases/facturas/clasificar-subpartidas.usecase';
+import { AddFacturaItemUseCase } from 'src/core/application/usecases/facturas/add-factura-item.usecase';
 
 import { ListDimsUseCase } from 'src/core/application/usecases/dims/list-dims.usecase';
 import { CreateDimsUseCase } from 'src/core/application/usecases/dims/create-dims.usecase';
@@ -44,7 +49,12 @@ import { FlujoController } from 'src/interfaces/controllers/flujo/flujo.controll
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([SubpartidaEntity, FacturaEntity, DimsEntity]),
+    TypeOrmModule.forFeature([
+      SubpartidaEntity,
+      FacturaEntity,
+      DimsEntity,
+      ClasificacionCacheEntity,
+    ]),
   ],
   controllers: [
     FacturasController,
@@ -58,6 +68,8 @@ import { FlujoController } from 'src/interfaces/controllers/flujo/flujo.controll
     GetFacturaUseCase,
     UpdateFacturaUseCase,
     UpdateFacturaItemUseCase,
+    ClasificarSubpartidasUseCase,
+    AddFacturaItemUseCase,
     // DIMS
     ListDimsUseCase,
     CreateDimsUseCase,
@@ -91,6 +103,10 @@ import { FlujoController } from 'src/interfaces/controllers/flujo/flujo.controll
     {
       provide: AI_SERVICE,
       useClass: LangChainAIService,
+    },
+    {
+      provide: CLASIFICACION_CACHE_REPOSITORY,
+      useClass: TypeOrmClasificacionCacheRepository,
     },
   ],
 })

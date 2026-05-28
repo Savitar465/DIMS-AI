@@ -18,7 +18,10 @@ import { UploadFacturaUseCase } from '../../../core/application/usecases/factura
 import { GetFacturaUseCase } from '../../../core/application/usecases/facturas/get-factura.usecase';
 import { UpdateFacturaUseCase } from '../../../core/application/usecases/facturas/update-factura.usecase';
 import { UpdateFacturaItemUseCase } from '../../../core/application/usecases/facturas/update-factura-item.usecase';
+import { ClasificarSubpartidasUseCase } from '../../../core/application/usecases/facturas/clasificar-subpartidas.usecase';
+import { AddFacturaItemUseCase } from '../../../core/application/usecases/facturas/add-factura-item.usecase';
 import {
+  AddFacturaItemDto,
   FacturaUpdateDto,
   UpdateFacturaItemDto,
   UploadFacturaDto,
@@ -40,6 +43,8 @@ export class FacturasController {
     private readonly getFacturaUseCase: GetFacturaUseCase,
     private readonly updateFacturaUseCase: UpdateFacturaUseCase,
     private readonly updateFacturaItemUseCase: UpdateFacturaItemUseCase,
+    private readonly clasificarSubpartidasUseCase: ClasificarSubpartidasUseCase,
+    private readonly addFacturaItemUseCase: AddFacturaItemUseCase,
   ) {}
 
   @Post()
@@ -102,5 +107,28 @@ export class FacturasController {
     @Body() body: UpdateFacturaItemDto,
   ) {
     return this.updateFacturaItemUseCase.execute(facturaId, itemId, body);
+  }
+
+  @Post(':facturaId/clasificar-subpartidas')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Clasificar subpartidas de los ítems de la factura (una sola llamada batch a IA)',
+  })
+  async clasificarSubpartidas(@Param('facturaId') facturaId: string) {
+    return this.clasificarSubpartidasUseCase.execute(facturaId);
+  }
+
+  @Post(':facturaId/items')
+  @HttpCode(201)
+  @ApiOperation({
+    summary: 'Agregar un ítem manualmente a la factura',
+    description:
+      'Crea un ítem nuevo con clasificada=false. La próxima llamada a POST /facturas/:id/clasificar-subpartidas lo procesará en la IA junto con los demás pendientes.',
+  })
+  async addItem(
+    @Param('facturaId') facturaId: string,
+    @Body() body: AddFacturaItemDto,
+  ) {
+    return this.addFacturaItemUseCase.execute(facturaId, body);
   }
 }

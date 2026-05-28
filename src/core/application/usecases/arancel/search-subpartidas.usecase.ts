@@ -1,9 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
 import {
-  AI_SERVICE,
-  AIService,
-} from '../../../domain/ports/outbound/ai.service';
-import {
   SUBPARTIDA_REPOSITORY,
   SubpartidaRepository,
 } from '../../../domain/ports/outbound/subpartida.repository';
@@ -14,10 +10,18 @@ export interface SearchSubpartidasResult {
   resultados: SubpartidaMatch[];
 }
 
+// Stopwords cortas para tokenización del query.
+const STOPWORDS = new Set([
+  'para', 'con', 'sin', 'del', 'los', 'las', 'una', 'uno', 'unos', 'unas',
+  'que', 'por', 'mas', 'pero', 'como', 'este', 'esta', 'estos', 'estas',
+  'and', 'the', 'for', 'with', 'from',
+]);
+
+const MAX_RESULTS = 20;
+
 @Injectable()
 export class SearchSubpartidasUseCase {
   constructor(
-    @Inject(AI_SERVICE) private readonly aiService: AIService,
     @Inject(SUBPARTIDA_REPOSITORY)
     private readonly subpartidaRepository: SubpartidaRepository,
   ) {}
@@ -26,43 +30,51 @@ export class SearchSubpartidasUseCase {
     query: string,
     linea?: string,
   ): Promise<SearchSubpartidasResult> {
-    if (!query || !query.trim()) {
-      return { query: query ?? '', resultados: [] };
+    const q = (query ?? '').trim();
+    if (!q) return { query: q, resultados: [] };
+
+    // Búsqueda directa en DB (sin IA): tokeniza el query, busca cada token
+    // en el repo, agrega por código sumando el número de tokens que matchean.
+    const tokens = this.tokenizar(q);
+    // Si no quedan tokens significativos, cae a búsqueda literal con el query.
+    const terms = tokens.length > 0 ? tokens : [q];
+
+    const scored = new Map<string, { sub: Subpartida; score: number }>();
+    for (const t of terms) {
+      const hits = await this.subpartidaRepository.search(t, linea);
+      for (const h of hits) {
+        const prev = scored.get(h.code);
+        if (prev) prev.score += 1;
+        else scored.set(h.code, { sub: h, score: 1 });
+      }
     }
 
-    let matches: any[] = [];
-    try {
-      matches = await this.aiService.buscarSubpartidas(query, { linea });
-    } catch {
-      matches = [];
-    }
-
-    const resolved: SubpartidaMatch[] = [];
-    for (let i = 0; i < matches.length; i++) {
-      const m = matches[i];
-      const code = m?.code ?? m?.codigo;
-      if (!code) continue;
-      const sub = await this.subpartidaRepository.findByCode(code);
-      if (!sub) continue;
-      if (linea && sub.linea !== linea) continue;
-      resolved.push({
-        ...sub,
-        score: typeof m?.score === 'number' ? m.score : Math.max(0.5, 1 - i * 0.1),
+    const max = Math.max(1, ...[...scored.values()].map((s) => s.score));
+    const resolved: SubpartidaMatch[] = [...scored.values()]
+      .sort((a, b) => b.score - a.score)
+      .slice(0, MAX_RESULTS)
+      .map((x) => ({
+        ...x.sub,
+        score: x.score / max, // normalizado 0–1
         bestMatch: false,
-      });
-    }
+      }));
 
-    // Fallback to plain repository search if the AI returned nothing usable.
-    if (resolved.length === 0) {
-      const found = await this.subpartidaRepository.search(query, linea);
-      found.forEach((sub: Subpartida, i: number) =>
-        resolved.push({ ...sub, score: Math.max(0.4, 0.9 - i * 0.1), bestMatch: false }),
-      );
-    }
-
-    resolved.sort((a, b) => b.score - a.score);
     if (resolved.length > 0) resolved[0].bestMatch = true;
+    return { query: q, resultados: resolved };
+  }
 
-    return { query, resultados: resolved };
+  private tokenizar(text: string): string[] {
+    const norm = text
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '');
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const t of norm.split(/[^a-z0-9]+/)) {
+      if (t.length < 3 || STOPWORDS.has(t) || seen.has(t)) continue;
+      seen.add(t);
+      out.push(t);
+    }
+    return out;
   }
 }

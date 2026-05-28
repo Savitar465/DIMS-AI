@@ -73,6 +73,7 @@ export class CreateDimsUseCase {
         subpartida: input.subpartida,
         confidence: 100,
         aiSuggested: false,
+        clasificada: true,
       };
       dims.items = [item];
       dims.proveedor = '';

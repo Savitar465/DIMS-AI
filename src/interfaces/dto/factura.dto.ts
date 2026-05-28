@@ -68,3 +68,35 @@ export class UploadFacturaDto {
   @ApiProperty({ type: 'string', format: 'binary' })
   archivo: any;
 }
+
+export class AddFacturaItemDto {
+  @ApiProperty()
+  @IsString()
+  descripcion: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  cantidad?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  unidad?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  precioUnit?: number;
+
+  @ApiPropertyOptional({
+    description: 'Subpartida inicial (opcional). Si se omite, el ítem queda sin clasificar.',
+    nullable: true,
+  })
+  @IsOptional()
+  @ValidateIf((o) => o.subpartida !== null)
+  @IsString()
+  subpartida?: string | null;
+}

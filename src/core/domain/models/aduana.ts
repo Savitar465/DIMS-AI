@@ -32,6 +32,11 @@ export interface FacturaItem {
   subpartida: string | null;
   confidence: number;
   aiSuggested: boolean;
+  // true cuando la IA ya evaluó este ítem (haya o no encontrado subpartida).
+  // Distingue "evaluado sin match" de "ítem nuevo que aún no se clasificó".
+  clasificada: boolean;
+  // Justificación textual devuelta por la IA en la última clasificación.
+  razon?: string;
 }
 
 export interface FacturaTotales {

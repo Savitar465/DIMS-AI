@@ -25,7 +25,7 @@ export class UploadFacturaUseCase {
     factura.id = id;
 
     try {
-      const extracted = await this.aiService.clasificarProductosDesdeFactura(
+      const extracted = await this.aiService.extraerDatosFactura(
         fileBuffer,
         mimeType,
       );
@@ -69,11 +69,6 @@ export class UploadFacturaUseCase {
   }
 
   private mapItem(p: any, idx: number): FacturaItem {
-    let code: string | null = null;
-    const sub = p?.subpartida;
-    if (sub && sub !== 'sin clasificacion') {
-      code = typeof sub === 'string' ? sub : (sub.code ?? null);
-    }
     const cantidad = Number(p?.cantidad) || 0;
     const precioUnit = Number(p?.valorUnitario) || 0;
     const subtotal = Number(p?.valorTotal) || cantidad * precioUnit;
@@ -84,9 +79,10 @@ export class UploadFacturaUseCase {
       unidad: 'UND',
       precioUnit,
       subtotal,
-      subpartida: code,
+      subpartida: null,
       confidence: 90,
-      aiSuggested: !!code,
+      aiSuggested: false,
+      clasificada: false,
     };
   }
 }

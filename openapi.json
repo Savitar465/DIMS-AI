@@ -78,7 +78,7 @@
       "post": {
         "tags": ["Facturas"],
         "summary": "Cargar factura para extracción con IA",
-        "description": "Sube un PDF, JPG o PNG (máx. 10 MB) de la factura comercial. La IA extrae proveedor, ítems, cantidades, precios y sugiere subpartidas. La extracción puede ser asíncrona; consultar GET /facturas/{facturaId} hasta que estado sea `extraida`.",
+        "description": "Sube un PDF, JPG o PNG (máx. 10 MB) de la factura comercial. La IA extrae proveedor, ítems, cantidades y precios mediante una única llamada de visión; las subpartidas NO se sugieren aquí (todos los ítems vuelven con `subpartida: null`). Para clasificar las subpartidas en lote, llamar a `POST /facturas/{facturaId}/clasificar-subpartidas`. La extracción puede ser asíncrona; consultar GET /facturas/{facturaId} hasta que estado sea `extraida`.",
         "operationId": "uploadFactura",
         "requestBody": {
           "required": true,
@@ -171,6 +171,49 @@
         }
       }
     },
+    "/facturas/{facturaId}/items": {
+      "parameters": [{ "$ref": "#/components/parameters/FacturaId" }],
+      "post": {
+        "tags": ["Facturas"],
+        "summary": "Agregar un ítem manualmente a la factura",
+        "description": "Crea un ítem nuevo (clasificada=false). La próxima llamada a POST /facturas/{facturaId}/clasificar-subpartidas lo procesará junto con los demás pendientes.",
+        "operationId": "addFacturaItem",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["descripcion"],
+                "properties": {
+                  "descripcion": { "type": "string" },
+                  "cantidad": { "type": "number", "minimum": 0 },
+                  "unidad": { "type": "string" },
+                  "precioUnit": { "type": "number", "minimum": 0 },
+                  "subpartida": {
+                    "type": ["string", "null"],
+                    "description": "Subpartida inicial (opcional)."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Ítem creado.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/FacturaItem" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
     "/facturas/{facturaId}/items/{itemId}": {
       "parameters": [
         { "$ref": "#/components/parameters/FacturaId" },
@@ -218,6 +261,27 @@
             }
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/facturas/{facturaId}/clasificar-subpartidas": {
+      "parameters": [{ "$ref": "#/components/parameters/FacturaId" }],
+      "post": {
+        "tags": ["Facturas"],
+        "summary": "Clasificar subpartidas de los ítems de la factura",
+        "description": "Dispara una única llamada batch a IA (solo texto, sin imagen) que toma los ítems de la factura sin subpartida y les asigna la subpartida arancelaria sugerida. Devuelve la factura con los ítems actualizados.",
+        "operationId": "clasificarSubpartidasFactura",
+        "responses": {
+          "200": {
+            "description": "Factura con subpartidas clasificadas.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Factura" }
+              }
+            }
+          },
           "404": { "$ref": "#/components/responses/NotFound" },
           "401": { "$ref": "#/components/responses/Unauthorized" }
         }
