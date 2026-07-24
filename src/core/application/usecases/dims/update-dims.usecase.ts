@@ -4,7 +4,12 @@ import {
   DimsRepository,
 } from '../../../domain/ports/outbound/dims.repository';
 import { DimsEntity } from '../../../../infraestructure/persistance/entities/dims.entity';
-import { FacturaItem } from '../../../domain/models/aduana';
+import {
+  DimsImportador,
+  DimsTransaccion,
+  FacturaItem,
+  TipoUsuarioDims,
+} from '../../../domain/models/aduana';
 import { GetDimsUseCase } from './get-dims.usecase';
 
 export interface UpdateDimsInput {
@@ -13,6 +18,16 @@ export interface UpdateDimsInput {
   aduanaIngreso?: string;
   regimen?: string;
   modalidad?: string;
+  tipoUsuario?: TipoUsuarioDims;
+  importador?: DimsImportador;
+  departamentoDestino?: string;
+  paisUltimaProcedencia?: string;
+  parteRecepcionSiNo?: boolean;
+  parteRecepcion?: string;
+  transporteHastaFrontera?: string;
+  transaccion?: DimsTransaccion;
+  requiereInfAdicional?: boolean;
+  infAdicional?: string;
   items?: FacturaItem[];
 }
 
@@ -40,6 +55,22 @@ export class UpdateDimsUseCase {
       dims.aduanaIngreso = input.aduanaIngreso;
     if (input.regimen !== undefined) dims.regimen = input.regimen;
     if (input.modalidad !== undefined) dims.modalidad = input.modalidad;
+    if (input.tipoUsuario !== undefined) dims.tipoUsuario = input.tipoUsuario;
+    if (input.importador !== undefined) dims.importador = input.importador;
+    if (input.departamentoDestino !== undefined)
+      dims.departamentoDestino = input.departamentoDestino;
+    if (input.paisUltimaProcedencia !== undefined)
+      dims.paisUltimaProcedencia = input.paisUltimaProcedencia;
+    if (input.parteRecepcionSiNo !== undefined)
+      dims.parteRecepcionSiNo = input.parteRecepcionSiNo;
+    if (input.parteRecepcion !== undefined)
+      dims.parteRecepcion = input.parteRecepcion;
+    if (input.transporteHastaFrontera !== undefined)
+      dims.transporteHastaFrontera = input.transporteHastaFrontera;
+    if (input.transaccion !== undefined) dims.transaccion = input.transaccion;
+    if (input.requiereInfAdicional !== undefined)
+      dims.requiereInfAdicional = input.requiereInfAdicional;
+    if (input.infAdicional !== undefined) dims.infAdicional = input.infAdicional;
     if (input.items !== undefined) dims.items = input.items;
 
     return this.dimsRepository.save(dims);

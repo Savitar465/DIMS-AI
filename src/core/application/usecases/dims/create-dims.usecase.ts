@@ -40,10 +40,15 @@ export class CreateDimsUseCase {
     }
 
     const dims = new DimsEntity();
-    dims.id = this.generateId();
+    // `id` es una referencia interna del borrador, NO el código DIMS oficial:
+    // ese lo asigna SUMA al transmitir la declaración (ver submit-dims).
+    dims.id = this.generateDraftRef();
     dims.estado = 'borrador';
-    dims.modalidad = 'SIMPLIFICADA';
-    dims.regimen = 'IM4';
+    dims.modalidad = '4101';
+    dims.regimen = '41';
+    dims.tipoUsuario = 'general';
+    dims.parteRecepcionSiNo = true;
+    dims.requiereInfAdicional = false;
     dims.fecha = new Date().toISOString().slice(0, 10);
     dims.items = [];
 
@@ -61,6 +66,18 @@ export class CreateDimsUseCase {
       dims.proveedor = factura.proveedor?.nombre ?? '';
       if (factura.factura?.fecha) dims.fecha = factura.factura.fecha;
       dims.items = (factura.items || []).map((it) => ({ ...it }));
+      // Pre-llenar la información de la transacción con lo que trae la factura.
+      const totales = factura.totales ?? {};
+      dims.transaccion = {
+        valorFobUsd: totales.subtotal ?? 0,
+        fleteDeclaradoSiNo: (totales.flete ?? 0) > 0,
+        fleteUsd: totales.flete ?? 0,
+        seguroDeclaradoSiNo: (totales.seguro ?? 0) > 0,
+        seguroUsd: totales.seguro ?? 0,
+        cantidadBultos: 1,
+        pesoBruto: 0,
+        pesoNeto: 0,
+      };
     } else if (input.subpartida) {
       const sub = await this.subpartidaRepository.findByCode(input.subpartida);
       const item: FacturaItem = {
@@ -82,9 +99,11 @@ export class CreateDimsUseCase {
     return this.dimsRepository.save(dims);
   }
 
-  private generateId(): string {
+  // Referencia interna del borrador. Deliberadamente NO tiene formato de código
+  // DIMS oficial: ese número lo emite SUMA, no esta plataforma.
+  private generateDraftRef(): string {
     const year = new Date().getFullYear();
     const seq = Math.floor(10000 + Math.random() * 89999);
-    return `DIMS-${year}-${seq}`;
+    return `BORRADOR-${year}-${seq}`;
   }
 }

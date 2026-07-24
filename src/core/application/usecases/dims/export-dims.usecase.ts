@@ -23,7 +23,9 @@ export class ExportDimsUseCase {
   async execute(id: string, formato: ExportFormat): Promise<ExportResult> {
     const dims = await this.getDimsUseCase.execute(id);
     const ext = EXTENSIONS[formato] ?? 'bin';
-    const nombreArchivo = `${dims.id}.${ext}`;
+    // Usa el código oficial de SUMA si ya fue asignado; si no, la referencia
+    // del borrador (el código DIMS lo emite SUMA, no esta plataforma).
+    const nombreArchivo = `${dims.codigoDims ?? dims.id}.${ext}`;
     const expira = new Date(Date.now() + 60 * 60 * 1000).toISOString();
 
     return {

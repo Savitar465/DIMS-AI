@@ -1363,19 +1363,68 @@
           "totalBob": { "type": "number", "description": "Total a pagar en bolivianos.", "example": 15022.16 }
         }
       },
+      "TipoUsuarioDims": {
+        "type": "string",
+        "enum": ["general", "noPresencial", "menajeDomestico"],
+        "description": "Modalidad del declarante. Condiciona límites de valor y documentos soporte."
+      },
+      "DimsImportador": {
+        "type": "object",
+        "description": "Datos del importador.",
+        "properties": {
+          "tipoDocumento": { "type": "string", "example": "NIT" },
+          "numeroDocumento": { "type": "string", "example": "7234182013" },
+          "nombreRazonSocial": { "type": "string", "example": "María Quispe Mamani" },
+          "domicilio": { "type": "string", "example": "Av. 6 de Agosto 2170, La Paz" }
+        }
+      },
+      "DimsTransaccion": {
+        "type": "object",
+        "description": "Información de la transacción comercial (valores, flete, seguro y bultos).",
+        "properties": {
+          "valorFobUsd": { "type": "number", "description": "Valor FOB total en USD.", "example": 8653.0 },
+          "fleteDeclaradoSiNo": { "type": "boolean", "description": "true si el flete fue pagado hasta el lugar de importación." },
+          "fleteUsd": { "type": "number", "example": 480.0 },
+          "seguroDeclaradoSiNo": { "type": "boolean", "description": "true si la transacción especifica costo de seguro." },
+          "seguroUsd": { "type": "number", "example": 92.0 },
+          "cantidadBultos": { "type": "integer", "description": "Cantidad total de bultos (> 0).", "example": 12 },
+          "pesoBruto": { "type": "number", "description": "Peso bruto total en kg (máx. 40 en courier/postal).", "example": 38.5 },
+          "pesoNeto": { "type": "number", "description": "Peso neto total en kg (≤ peso bruto).", "example": 35.2 }
+        }
+      },
       "Dims": {
         "type": "object",
         "required": ["id", "estado", "proveedor", "fecha"],
         "properties": {
-          "id": { "type": "string", "example": "DIMS-2026-04823" },
+          "id": {
+            "type": "string",
+            "description": "Referencia interna del borrador. NO es el código DIMS oficial.",
+            "example": "BORRADOR-2026-04823"
+          },
+          "codigoDims": {
+            "type": "string",
+            "nullable": true,
+            "description": "Código/número oficial de la DIMS. Lo asigna SUMA al transmitir la declaración; es null mientras está en borrador. Esta plataforma no lo genera.",
+            "example": null
+          },
           "estado": { "$ref": "#/components/schemas/DimsEstado" },
           "facturaId": { "type": "string", "example": "fac_8f21a" },
           "proveedor": { "type": "string", "example": "Shenzhen Electronics Co., Ltd." },
           "fecha": { "type": "string", "format": "date", "example": "2026-05-14" },
-          "nit": { "type": "string", "description": "NIT del importador.", "example": "7234182013" },
-          "aduanaIngreso": { "type": "string", "example": "030" },
-          "regimen": { "type": "string", "example": "IM4" },
-          "modalidad": { "type": "string", "example": "SIMPLIFICADA" },
+          "nit": { "type": "string", "description": "NIT del importador (equivale a importador.numeroDocumento cuando el tipo es NIT).", "example": "7234182013" },
+          "aduanaIngreso": { "type": "string", "description": "Aduana de despacho.", "example": "030" },
+          "regimen": { "type": "string", "description": "Destino / Régimen aduanero.", "example": "41" },
+          "modalidad": { "type": "string", "description": "Modalidad del régimen (modReg.cod).", "example": "4101" },
+          "tipoUsuario": { "$ref": "#/components/schemas/TipoUsuarioDims" },
+          "importador": { "$ref": "#/components/schemas/DimsImportador" },
+          "departamentoDestino": { "type": "string", "example": "La Paz" },
+          "paisUltimaProcedencia": { "type": "string", "description": "No puede ser Bolivia. Deshabilitado en aduana de frontera/zona franca.", "example": "CN" },
+          "parteRecepcionSiNo": { "type": "boolean", "description": "¿La DIMS tiene Parte de Recepción?" },
+          "parteRecepcion": { "type": "string", "description": "Número de Parte de Recepción (requerido si parteRecepcionSiNo).", "example": "PR-2026-001842" },
+          "transporteHastaFrontera": { "type": "string", "description": "Modalidad de transporte hasta la frontera (tra.hasFro).", "example": "3" },
+          "transaccion": { "$ref": "#/components/schemas/DimsTransaccion" },
+          "requiereInfAdicional": { "type": "boolean" },
+          "infAdicional": { "type": "string" },
           "items": {
             "type": "array",
             "items": { "$ref": "#/components/schemas/FacturaItem" }
@@ -1388,13 +1437,23 @@
       },
       "DimsUpdate": {
         "type": "object",
-        "description": "Campos editables de una DIMS en borrador.",
+        "description": "Campos editables de una DIMS en borrador. El código DIMS no es editable: lo asigna SUMA.",
         "properties": {
           "proveedor": { "type": "string" },
           "nit": { "type": "string" },
           "aduanaIngreso": { "type": "string" },
           "regimen": { "type": "string" },
           "modalidad": { "type": "string" },
+          "tipoUsuario": { "$ref": "#/components/schemas/TipoUsuarioDims" },
+          "importador": { "$ref": "#/components/schemas/DimsImportador" },
+          "departamentoDestino": { "type": "string" },
+          "paisUltimaProcedencia": { "type": "string" },
+          "parteRecepcionSiNo": { "type": "boolean" },
+          "parteRecepcion": { "type": "string" },
+          "transporteHastaFrontera": { "type": "string" },
+          "transaccion": { "$ref": "#/components/schemas/DimsTransaccion" },
+          "requiereInfAdicional": { "type": "boolean" },
+          "infAdicional": { "type": "string" },
           "items": {
             "type": "array",
             "items": { "$ref": "#/components/schemas/FacturaItem" }

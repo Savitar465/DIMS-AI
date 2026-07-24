@@ -35,7 +35,21 @@ export class SubmitDimsUseCase {
       });
     }
 
+    // El código/número oficial de la DIMS lo asigna SUMA como respuesta a la
+    // transmisión; esta plataforma no lo genera. Aquí se simula esa respuesta y
+    // se persiste el valor devuelto por SUMA. Si ya viniera asignado, se respeta.
     dims.estado = 'enviada';
+    if (!dims.codigoDims) {
+      dims.codigoDims = this.simularCodigoSuma();
+    }
     return this.dimsRepository.save(dims);
+  }
+
+  // Placeholder de integración: representa el número que SUMA retorna al aceptar
+  // la DIMS. Reemplazar por la respuesta real del servicio de SUMA.
+  private simularCodigoSuma(): string {
+    const year = new Date().getFullYear();
+    const seq = Math.floor(10000 + Math.random() * 89999);
+    return `DIMS-${year}-${seq}`;
   }
 }

@@ -54,6 +54,36 @@ export interface Liquidacion {
   totalBob: number;
 }
 
+// ── DIMS: campos requeridos de la declaración ────────────────────────────────
+// El código/número oficial de la DIMS NO se genera aquí: lo asigna el sistema
+// SUMA de la Aduana Nacional al transmitir la declaración. Internamente la DIMS
+// se identifica con una referencia de borrador (`Dims.id`).
+
+// Modalidad del declarante (`tipoUsuarioDims`). Condiciona límites de valor y
+// documentos soporte obligatorios.
+export type TipoUsuarioDims = 'general' | 'noPresencial' | 'menajeDomestico';
+
+export interface DimsImportador {
+  tipoDocumento?: string;
+  numeroDocumento?: string;
+  nombreRazonSocial?: string;
+  domicilio?: string;
+}
+
+// Información de la transacción comercial (valores, flete, seguro y bultos).
+export interface DimsTransaccion {
+  valorFobUsd?: number;
+  // El flete/seguro declarado solo es requerido cuando el "SiNo" está en true;
+  // de lo contrario se calcula por parametrica.
+  fleteDeclaradoSiNo?: boolean;
+  fleteUsd?: number;
+  seguroDeclaradoSiNo?: boolean;
+  seguroUsd?: number;
+  cantidadBultos?: number;
+  pesoBruto?: number;
+  pesoNeto?: number;
+}
+
 export interface ValidationIssue {
   nivel: 'error' | 'advertencia' | 'info';
   campo?: string;

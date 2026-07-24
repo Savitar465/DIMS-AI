@@ -1,14 +1,28 @@
 import {
   IsArray,
+  IsBoolean,
   IsEmail,
   IsEnum,
+  IsIn,
+  IsObject,
   IsOptional,
   IsString,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { ExportFormat, FacturaItem } from '../../core/domain/models/aduana';
+import {
+  DimsImportador,
+  DimsTransaccion,
+  ExportFormat,
+  FacturaItem,
+  TipoUsuarioDims,
+} from '../../core/domain/models/aduana';
 
 const EXPORT_FORMATS: ExportFormat[] = ['xml', 'pdf', 'json', 'print'];
+const TIPOS_USUARIO: TipoUsuarioDims[] = [
+  'general',
+  'noPresencial',
+  'menajeDomestico',
+];
 
 export class CreateDimsDto {
   @ApiPropertyOptional({ example: 'fac_8f21a' })
@@ -33,20 +47,79 @@ export class DimsUpdateDto {
   @IsString()
   nit?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ description: 'Aduana de despacho.' })
   @IsOptional()
   @IsString()
   aduanaIngreso?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ description: 'Destino / Régimen aduanero (ej: 41, 91, 93).' })
   @IsOptional()
   @IsString()
   regimen?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ description: 'Modalidad del régimen (modReg.cod: 4101, 4107, …).' })
   @IsOptional()
   @IsString()
   modalidad?: string;
+
+  @ApiPropertyOptional({
+    enum: TIPOS_USUARIO,
+    description: 'Modalidad del declarante (tipoUsuarioDims).',
+  })
+  @IsOptional()
+  @IsIn(TIPOS_USUARIO)
+  tipoUsuario?: TipoUsuarioDims;
+
+  @ApiPropertyOptional({
+    type: Object,
+    description: 'Datos del importador: tipoDocumento, numeroDocumento, nombreRazonSocial, domicilio.',
+  })
+  @IsOptional()
+  @IsObject()
+  importador?: DimsImportador;
+
+  @ApiPropertyOptional({ description: 'Departamento de destino.' })
+  @IsOptional()
+  @IsString()
+  departamentoDestino?: string;
+
+  @ApiPropertyOptional({ description: 'País de última procedencia (no puede ser Bolivia).' })
+  @IsOptional()
+  @IsString()
+  paisUltimaProcedencia?: string;
+
+  @ApiPropertyOptional({ description: '¿La DIMS tiene Parte de Recepción?' })
+  @IsOptional()
+  @IsBoolean()
+  parteRecepcionSiNo?: boolean;
+
+  @ApiPropertyOptional({ description: 'Número de Parte de Recepción (requerido si parteRecepcionSiNo).' })
+  @IsOptional()
+  @IsString()
+  parteRecepcion?: string;
+
+  @ApiPropertyOptional({ description: 'Modalidad de transporte hasta la frontera (tra.hasFro).' })
+  @IsOptional()
+  @IsString()
+  transporteHastaFrontera?: string;
+
+  @ApiPropertyOptional({
+    type: Object,
+    description: 'Información de la transacción: valorFobUsd, flete, seguro, bultos y pesos.',
+  })
+  @IsOptional()
+  @IsObject()
+  transaccion?: DimsTransaccion;
+
+  @ApiPropertyOptional({ description: '¿Requiere información adicional (docSop.reqInfAdi)?' })
+  @IsOptional()
+  @IsBoolean()
+  requiereInfAdicional?: boolean;
+
+  @ApiPropertyOptional({ description: 'Información adicional (requerida si requiereInfAdicional).' })
+  @IsOptional()
+  @IsString()
+  infAdicional?: string;
 
   @ApiPropertyOptional({ type: [Object] })
   @IsOptional()
