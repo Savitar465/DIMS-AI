@@ -70,6 +70,9 @@ export class DimsEntity {
   @Column('text', { nullable: true })
   transporteHastaFrontera: string;
 
+  @Column('text', { nullable: true })
+  manifiesto: string;
+
   @Column('simple-json', { nullable: true })
   transaccion: DimsTransaccion;
 
@@ -79,8 +82,26 @@ export class DimsEntity {
   @Column('text', { nullable: true })
   infAdicional: string;
 
+  // Códigos de los documentos soporte que se van a adjuntar (CM-003, OT-001…).
+  // Es un dato de la declaración, no del archivo cargado: el usuario puede
+  // comprometerse a presentar un papel que todavía no subió.
+  @Column('simple-json', { nullable: true })
+  documentosSoporte: string[];
+
   @Column('simple-json', { nullable: true })
   items: FacturaItem[];
+
+  // De dónde salió cada campo: leído de un documento, deducido por una regla o
+  // puesto/confirmado por el usuario. Se guarda porque al reabrir el borrador
+  // hay que saber qué ya revisó una persona y qué sigue siendo una suposición.
+  @Column('simple-json', { nullable: true })
+  origenes: Record<string, string>;
+
+  // Confianza de la extracción por campo (0–100), con las mismas claves que
+  // `origenes`. Permite señalar los tres datos que conviene revisar en vez de
+  // pintar una sección entera como dudosa.
+  @Column('simple-json', { nullable: true })
+  confianzas: Record<string, number>;
 
   @Column('simple-json', { nullable: true })
   liquidacion: Liquidacion;

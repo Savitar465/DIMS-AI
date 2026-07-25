@@ -4,8 +4,8 @@ import {
   AIService,
   ClasificacionItemInput,
   ClasificacionItemOutput,
+  ExtraccionFactura,
 } from 'src/core/domain/ports/outbound/ai.service';
-import { Factura } from 'src/core/domain/models/factura';
 import { Subpartida } from 'src/core/domain/models/subpartida';
 
 // Stopwords cortas para el tokenizador del pre-filtro. No es exhaustiva — solo
@@ -27,6 +27,197 @@ import { z } from 'zod';
 const pdf = require('pdf-parse');
 // No local OCR: images will be sent base64 to the Gemini client for analysis
 
+// ── Extracción de documentos de importación ─────────────────────────────────
+// El objetivo es sacar del papel la mayor cantidad posible de campos
+// obligatorios de la DIMS. Todo es nullable a propósito: el modelo debe decir
+// "no está" en vez de inventar, porque después el usuario firma la declaración.
+
+const nullableString = () => z.string().nullable().optional();
+const nullableNumber = () => z.number().nullable().optional();
+
+const EXTRACCION_SCHEMA = z.object({
+  tipoDocumento: z
+    .enum(['factura', 'packingList', 'guiaTransporte', 'otro'])
+    .nullable()
+    .optional(),
+  proveedor: z
+    .object({
+      nombre: nullableString(),
+      direccion: nullableString(),
+      pais: nullableString(),
+      rfc: nullableString(),
+    })
+    .nullable()
+    .optional(),
+  factura: z
+    .object({
+      numero: nullableString(),
+      fecha: nullableString(),
+      moneda: nullableString(),
+      incoterm: nullableString(),
+      puertoEmbarque: nullableString(),
+    })
+    .nullable()
+    .optional(),
+  importador: z
+    .object({
+      nombreRazonSocial: nullableString(),
+      numeroDocumento: nullableString(),
+      domicilio: nullableString(),
+      ciudad: nullableString(),
+    })
+    .nullable()
+    .optional(),
+  logistica: z
+    .object({
+      cantidadBultos: nullableNumber(),
+      pesoBrutoKg: nullableNumber(),
+      pesoNetoKg: nullableNumber(),
+      manifiesto: nullableString(),
+      paisUltimaProcedencia: nullableString(),
+      medioTransporte: nullableString(),
+    })
+    .nullable()
+    .optional(),
+  totales: z
+    .object({
+      subtotal: nullableNumber(),
+      flete: nullableNumber(),
+      seguro: nullableNumber(),
+    })
+    .nullable()
+    .optional(),
+  productos: z
+    .array(
+      z.object({
+        descripcion: z.string(),
+        cantidad: z.number(),
+        valorUnitario: z.number(),
+        valorTotal: z.number(),
+      }),
+    )
+    .nullable()
+    .optional(),
+});
+
+const EXTRACCION_INSTRUCCIONES = `Sos un especialista en comercio exterior boliviano. Vas a leer un documento de importación (factura comercial, packing list o guía de transporte) y extraer los datos que se necesitan para llenar una DIMS de la Aduana Nacional.
+
+Devolvé ÚNICAMENTE un JSON válido, sin texto antes ni después, sin bloques de código markdown, con esta estructura exacta:
+
+{
+  "tipoDocumento": "factura" | "packingList" | "guiaTransporte" | "otro",
+  "proveedor":   { "nombre": string|null, "direccion": string|null, "pais": string|null, "rfc": string|null },
+  "factura":     { "numero": string|null, "fecha": string|null, "moneda": string|null, "incoterm": string|null, "puertoEmbarque": string|null },
+  "importador":  { "nombreRazonSocial": string|null, "numeroDocumento": string|null, "domicilio": string|null, "ciudad": string|null },
+  "logistica":   { "cantidadBultos": number|null, "pesoBrutoKg": number|null, "pesoNetoKg": number|null, "manifiesto": string|null, "paisUltimaProcedencia": string|null, "medioTransporte": string|null },
+  "totales":     { "subtotal": number|null, "flete": number|null, "seguro": number|null },
+  "productos":   [ { "descripcion": string, "cantidad": number, "valorUnitario": number, "valorTotal": number } ]
+}
+
+REGLA PRINCIPAL: si un dato NO está en el documento, poné null. No lo deduzcas, no lo estimes y no lo inventes. Un campo vacío se corrige después; un dato falso en una declaración aduanera es una infracción.
+
+Cómo identificar cada dato:
+
+- proveedor: quien VENDE o EMITE. Buscá "Seller", "Shipper", "Exporter", "Vendedor", "From", o el membrete del encabezado.
+- importador: a quién va DIRIGIDA la mercadería. Buscá "Bill To", "Sold To", "Consignee", "Ship To", "Destinatario", "Importador", "Cliente". NO lo confundas con el proveedor.
+- importador.numeroDocumento: NIT, RUC, Tax ID o CI del destinatario, si figura.
+- importador.ciudad: la ciudad del destinatario (ej: "Santa Cruz", "La Paz", "Cochabamba").
+- factura.fecha: en formato ISO (YYYY-MM-DD).
+- factura.incoterm: FOB, EXW, CIF, CFR, CPT, DAP, DDP, etc.
+- factura.puertoEmbarque: "Port of Loading", "Puerto de embarque", "Ship From".
+- totales.subtotal: el valor de la mercadería SIN flete ni seguro. Si el documento solo trae un total que ya los incluye, poné el subtotal en null.
+- totales.flete: "Freight", "Shipping", "Flete". totales.seguro: "Insurance", "Seguro".
+- logistica.cantidadBultos: cantidad de PAQUETES, no de unidades de producto. Buscá "Packages", "Cartons", "CTNS", "Colli", "Bultos", "Pieces".
+- logistica.pesoBrutoKg: "Gross Weight", "G.W.", "Peso bruto". logistica.pesoNetoKg: "Net Weight", "N.W.", "Peso neto".
+- Convertí SIEMPRE los pesos a kilogramos. Si vienen en libras (lb/lbs), multiplicá por 0.4536. Si vienen en toneladas, multiplicá por 1000.
+- logistica.manifiesto: nº de guía aérea (AWB), conocimiento de embarque (B/L), carta de porte, tracking del courier o nº de manifiesto.
+- logistica.paisUltimaProcedencia: el país DESDE DONDE SALIÓ FÍSICAMENTE la carga (puerto o aeropuerto de embarque). Puede no coincidir con el país del proveedor.
+- logistica.medioTransporte: "1" si es marítimo (B/L, vessel), "3" si es carretero (camión, carta de porte), "4" si es aéreo (AWB, flight), "5" si es courier o correo (DHL, FedEx, UPS, EMS).
+- productos: una entrada por línea del detalle. Números sin separadores de miles y con punto decimal.
+
+Si el documento es un packing list o una guía de transporte, es normal que "productos" y "totales" vengan vacíos o incompletos: llená solo lo que realmente figure.`;
+
+/** Convierte lo que devolvió el modelo al contrato del puerto, sin confiar en los tipos. */
+function normalizarExtraccion(raw: any): ExtraccionFactura {
+  const num = (v: any): number | null => {
+    if (v === null || v === undefined || v === '') return null;
+    const n = typeof v === 'number' ? v : Number(String(v).replace(/,/g, ''));
+    return Number.isFinite(n) ? n : null;
+  };
+  const str = (v: any): string | null => {
+    if (v === null || v === undefined) return null;
+    const s = String(v).trim();
+    return s.length > 0 && s.toLowerCase() !== 'null' ? s : null;
+  };
+  const obj = (v: any) => (v && typeof v === 'object' ? v : {});
+
+  const p = obj(raw?.proveedor);
+  const f = obj(raw?.factura);
+  const i = obj(raw?.importador);
+  const l = obj(raw?.logistica);
+  const t = obj(raw?.totales);
+
+  const productos = (Array.isArray(raw?.productos) ? raw.productos : [])
+    .map((prod: any) => {
+      const cantidad = num(prod?.cantidad) ?? 0;
+      const valorUnitario = num(prod?.valorUnitario) ?? 0;
+      return {
+        descripcion: str(prod?.descripcion) ?? '',
+        cantidad,
+        valorUnitario,
+        valorTotal: num(prod?.valorTotal) ?? cantidad * valorUnitario,
+      };
+    })
+    .filter((prod) => prod.descripcion.length > 0);
+
+  return {
+    tipoDocumento: raw?.tipoDocumento ?? null,
+    proveedor: {
+      nombre: str(p.nombre),
+      direccion: str(p.direccion),
+      pais: str(p.pais),
+      rfc: str(p.rfc),
+    },
+    factura: {
+      numero: str(f.numero),
+      fecha: str(f.fecha),
+      moneda: str(f.moneda),
+      incoterm: str(f.incoterm)?.toUpperCase() ?? null,
+      puertoEmbarque: str(f.puertoEmbarque),
+    },
+    importador: {
+      nombreRazonSocial: str(i.nombreRazonSocial),
+      numeroDocumento: str(i.numeroDocumento),
+      domicilio: str(i.domicilio),
+      ciudad: str(i.ciudad),
+    },
+    logistica: {
+      cantidadBultos: num(l.cantidadBultos),
+      pesoBrutoKg: num(l.pesoBrutoKg),
+      pesoNetoKg: num(l.pesoNetoKg),
+      manifiesto: str(l.manifiesto),
+      paisUltimaProcedencia: str(l.paisUltimaProcedencia),
+      medioTransporte: str(l.medioTransporte),
+    },
+    totales: {
+      subtotal: num(t.subtotal),
+      flete: num(t.flete),
+      seguro: num(t.seguro),
+    },
+    productos,
+  };
+}
+
+// Consumo de tokens de una llamada al LLM. Gemini lo devuelve en `usageMetadata`;
+// `thinkingTokens` solo aparece en modelos con razonamiento (2.5+).
+export interface UsoTokens {
+  model: string;
+  promptTokens: number;
+  outputTokens: number;
+  thinkingTokens: number;
+  totalTokens: number;
+}
+
 // Small Gemini client wrapper that provides an `invoke` method compatible with LangChain usage in this service.
 // It uses the Google Generative API (v1beta2) directly via fetch. It expects a server-side API key or bearer token.
 class GeminiClient {
@@ -39,12 +230,49 @@ class GeminiClient {
     this.modelName = modelName;
   }
 
-  
+  // Lee `usageMetadata` de la respuesta y lo deja en el log. Se llama en cada
+  // punto donde una petición terminó OK (incluidos los reintentos con otro
+  // modelo), así el log refleja el modelo que realmente cobró los tokens.
+  private reportarUso(json: any, modelo: string, label: string): UsoTokens {
+    const meta = json?.usageMetadata ?? json?.usage_metadata ?? {};
+    const n = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+    const promptTokens = n(meta.promptTokenCount ?? meta.prompt_token_count);
+    const outputTokens = n(
+      meta.candidatesTokenCount ?? meta.candidates_token_count,
+    );
+    const thinkingTokens = n(meta.thoughtsTokenCount ?? meta.thoughts_token_count);
+    const totalTokens =
+      n(meta.totalTokenCount ?? meta.total_token_count) ||
+      promptTokens + outputTokens + thinkingTokens;
+
+    const uso: UsoTokens = {
+      model: modelo,
+      promptTokens,
+      outputTokens,
+      thinkingTokens,
+      totalTokens,
+    };
+
+    if (totalTokens === 0) {
+      console.warn(
+        `[LLM Tokens] ${label} model=${modelo} — la respuesta no trajo usageMetadata`,
+      );
+      return uso;
+    }
+
+    console.log(
+      `[LLM Tokens] ${label} model=${modelo} input=${promptTokens} output=${outputTokens}` +
+        (thinkingTokens > 0 ? ` thinking=${thinkingTokens}` : '') +
+        ` total=${totalTokens}`,
+    );
+    return uso;
+  }
 
   async invoke(
     prompt: string,
     inlineData?: { mime_type: string; data: string },
-  ): Promise<{ content: string }> {
+    label = 'gemini',
+  ): Promise<{ content: string; usage?: UsoTokens }> {
     // Prefer the v1beta generateContent endpoint used by newer Gemini models.
     const tryRequest = async (
       url: string,
@@ -204,7 +432,11 @@ class GeminiClient {
                           : undefined) ??
                         fmJson?.content ??
                         '';
-                      if (fmCandidate) return { content: fmCandidate };
+                      if (fmCandidate)
+                        return {
+                          content: fmCandidate,
+                          usage: this.reportarUso(fmJson, fm, label),
+                        };
                     } catch (e: any) {
                       console.warn(
                         `GeminiClient: error while trying model ${fm} from ListModels: ${e?.message ?? e}`,
@@ -271,7 +503,11 @@ class GeminiClient {
                     : undefined) ??
                   fmJson?.content ??
                   '';
-                if (fmCandidate) return { content: fmCandidate };
+                if (fmCandidate)
+                  return {
+                    content: fmCandidate,
+                    usage: this.reportarUso(fmJson, fm, label),
+                  };
               } catch (e: any) {
                 console.warn(
                   `GeminiClient: error while trying fallback model ${fm}: ${e?.message ?? e}`,
@@ -298,7 +534,10 @@ class GeminiClient {
           json?.content ??
           '';
 
-        return { content: candidate };
+        return {
+          content: candidate,
+          usage: this.reportarUso(json, normalizedModel, label),
+        };
       } catch (err: any) {
         console.warn(
           `GeminiClient: network/parse error on attempt ${attempt.desc}: ${err?.message ?? err}`,
@@ -310,6 +549,9 @@ class GeminiClient {
     // Instead of throwing, log the error and return an empty content result so
     // higher-level code can perform graceful fallbacks without causing unhandled exceptions.
     console.error('GeminiClient: all attempts failed', lastErr);
+    console.log(
+      `[LLM Tokens] ${label} model=${this.modelName} — llamada fallida, sin consumo reportado`,
+    );
     return { content: '' };
   }
 }
@@ -368,7 +610,7 @@ export class LangChainAIService implements AIService {
   async extraerDatosFactura(
     fileBuffer: Buffer,
     mimeType: string,
-  ): Promise<Partial<Factura>> {
+  ): Promise<ExtraccionFactura> {
     let text: string | undefined;
     let imageBase64: string | undefined;
 
@@ -388,56 +630,30 @@ export class LangChainAIService implements AIService {
     );
 
     const parser = StructuredOutputParser.fromZodSchema(
-      z.object({
-        proveedor: z.string().describe('Nombre de la empresa proveedora'),
-        valorTotal: z.number().describe('Valor total de la factura'),
-        moneda: z.string().describe('Código de moneda (ej: USD, EUR)'),
-        fecha: z.string().describe('Fecha de la factura en formato ISO'),
-        productos: z.array(
-          z.object({
-            descripcion: z.string().describe('Descripción clara del producto'),
-            cantidad: z.number().describe('Cantidad de unidades'),
-            valorUnitario: z.number().describe('Valor por unidad'),
-            valorTotal: z.number().describe('Valor total del ítem'),
-          }),
-        ),
-      }),
+      EXTRACCION_SCHEMA as any,
     );
 
-    // Build the prompt. For images we will NOT embed base64 in the prompt; the image will be sent via inline_data.
-    const templateForImage = `Eres un modelo experto. A continuación recibirás una imagen de una factura (imagen adjunta).
-Por favor, analiza la imagen y extrae la información solicitada.
-
-INSTRUCCIÓN IMPORTANTE: Genera únicamente un JSON válido con la siguiente estructura y sin texto adicional con la información obtenida de la imagen:
-{{
-  "proveedor": "string",
-  "fecha": "string (formato ISO)",
-  "moneda": "string (ej: \"USD\")",
-  "valorTotal": number,
-  "productos": [{{ "descripcion": "string", "cantidad": number, "valorUnitario": number, "valorTotal": number }}]
-}}
-`;
-
-    const prompt = new PromptTemplate({
-      template: templateForImage,
-      inputVariables: [],
-      partialVariables: { format_instructions: parser.getFormatInstructions() },
-    });
-
-    // Format the prompt (no image content embedded)
-    const input = await prompt.format({});
+    // El texto del PDF se inyecta en el prompt; la imagen viaja aparte como
+    // inline_data. Sin esta rama, un PDF llegaba al modelo sin contenido.
+    const input = imageBase64
+      ? `${EXTRACCION_INSTRUCCIONES}\n\nAnalizá la imagen adjunta y devolvé únicamente el JSON.`
+      : `${EXTRACCION_INSTRUCCIONES}\n\nCONTENIDO DEL DOCUMENTO:\n"""\n${(
+          text ?? ''
+        ).slice(0, 60000)}\n"""\n\nDevolvé únicamente el JSON.`;
 
     try {
       // If we have an image, send it as inline_data to GeminiClient (mime_type + base64); otherwise invoke normally
       let response: any;
       if (imageBase64 && typeof this.model.invoke === 'function') {
-        response = await this.model.invoke(input, {
-          mime_type: mimeType,
-          data: imageBase64,
-        });
+        response = await this.model.invoke(
+          input,
+          { mime_type: mimeType, data: imageBase64 },
+          'extraccion-factura',
+        );
       } else {
-        response = await this.model.invoke(input);
+        response = await this.model.invoke(input, undefined, 'extraccion-factura');
       }
+      this.logUsoLangChain('extraccion-factura', response);
       const contentStr = this.normalizeModelResponse(response);
       console.log(
         `[AI Extraction] Normalized LLM response length: ${contentStr?.length}`,
@@ -532,42 +748,18 @@ INSTRUCCIÓN IMPORTANTE: Genera únicamente un JSON válido con la siguiente est
         // If still no output, return a safe, best-effort fallback so the HTTP layer receives JSON instead of a 500
         if (!output) {
           console.warn(
-            '[AI Extraction] Could not parse LLM response; returning best-effort fallback with raw sanitized content',
+            '[AI Extraction] Could not parse LLM response; returning empty extraction',
           );
-          return {
-            proveedor: 'Error en extracción',
-            valorTotal: 0,
-            productos: [
-              {
-                descripcion: (sanitized ?? 'No parseable content').slice(
-                  0,
-                  1000,
-                ),
-                cantidad: 0,
-                valorUnitario: 0,
-                valorTotal: 0,
-              },
-            ],
-          } as Partial<Factura>;
+          return { productos: [] };
         }
       }
 
-      return output as Partial<Factura>;
+      return normalizarExtraccion(output);
     } catch (error) {
       console.error('[AI Extraction] Error calling LLM:', error);
-      // Fallback simulado (el que teníamos antes pero un poco más robusto)
-      return {
-        proveedor: 'Error en extracción',
-        valorTotal: 0,
-        productos: [
-          {
-            descripcion: 'No se pudo extraer data',
-            cantidad: 0,
-            valorUnitario: 0,
-            valorTotal: 0,
-          },
-        ],
-      };
+      // Devolver una extracción vacía en vez de datos inventados: el usuario
+      // completa los campos a mano, pero nunca firma un dato falso.
+      return { productos: [] };
     }
   }
 
@@ -660,7 +852,9 @@ Formato de salida:
 
     try {
       // Clasificación = solo texto → modelo barato.
-      const response = await this.textModel.invoke(input);
+      const label = `clasificacion-subpartidas(${itemsAClasificar.length} items)`;
+      const response = await this.textModel.invoke(input, undefined, label);
+      this.logUsoLangChain(label, response);
       const contentStr = this.unwrapTextEnvelope(
         this.normalizeModelResponse(response),
       );
@@ -736,6 +930,28 @@ Formato de salida:
       console.error('[AI Classify] Error calling LLM:', err);
       return emptyResult();
     }
+  }
+
+  // Cuando no hay GEMINI_API_KEY se usa ChatOpenAI, que no pasa por
+  // GeminiClient.reportarUso: el consumo viene en el AIMessage de LangChain.
+  // Si la respuesta ya trae `usage` (GeminiClient) no logueamos de nuevo.
+  private logUsoLangChain(label: string, response: any): void {
+    if (!response || typeof response !== 'object' || response.usage) return;
+    const meta =
+      response.usage_metadata ??
+      response.response_metadata?.usage ??
+      response.response_metadata?.tokenUsage;
+    if (!meta) return;
+    const n = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+    const input = n(meta.input_tokens ?? meta.prompt_tokens ?? meta.promptTokens);
+    const output = n(
+      meta.output_tokens ?? meta.completion_tokens ?? meta.completionTokens,
+    );
+    const total = n(meta.total_tokens ?? meta.totalTokens) || input + output;
+    const modelo = response.response_metadata?.model_name ?? 'openai';
+    console.log(
+      `[LLM Tokens] ${label} model=${modelo} input=${input} output=${output} total=${total}`,
+    );
   }
 
   // Clean a JSON-like string to increase the chance JSON.parse will succeed.

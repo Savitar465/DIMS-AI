@@ -7,7 +7,11 @@ import {
   SUBPARTIDA_REPOSITORY,
   SubpartidaRepository,
 } from '../../../domain/ports/outbound/subpartida.repository';
-import { ValidationIssue, ValidationResult } from '../../../domain/models/aduana';
+import {
+  DOCUMENTOS_QUE_ACREDITAN_VALOR,
+  ValidationIssue,
+  ValidationResult,
+} from '../../../domain/models/aduana';
 import { DimsEntity } from '../../../../infraestructure/persistance/entities/dims.entity';
 import { GetDimsUseCase } from './get-dims.usecase';
 
@@ -27,6 +31,7 @@ export class ValidateDimsUseCase {
     this.validarDatosGenerales(dims, issues);
     this.validarImportador(dims, issues);
     this.validarTransaccion(dims, issues);
+    this.validarDocumentosSoporte(dims, issues);
 
     if (!dims.items || dims.items.length === 0) {
       issues.push({
@@ -120,6 +125,34 @@ export class ValidateDimsUseCase {
         nivel: 'error',
         campo: 'infAdicional',
         mensaje: 'La información adicional es obligatoria.',
+      });
+    }
+  }
+
+  // Documentos soporte (§1.A). En no presencial hay que acreditar cuánto costó
+  // la mercadería: sin factura comercial, factura de compra local o declaración
+  // jurada, la aduana no tiene con qué contrastar el valor declarado.
+  private validarDocumentosSoporte(dims: DimsEntity, issues: ValidationIssue[]) {
+    const marcados = dims.documentosSoporte ?? [];
+    if (marcados.length === 0) {
+      issues.push({
+        nivel: 'error',
+        campo: 'documentosSoporte',
+        mensaje: 'Hay que indicar al menos un documento soporte.',
+      });
+      return;
+    }
+    if (dims.tipoUsuario !== 'noPresencial') return;
+    const acredita = marcados.some((c) =>
+      DOCUMENTOS_QUE_ACREDITAN_VALOR.includes(c),
+    );
+    if (!acredita) {
+      issues.push({
+        nivel: 'error',
+        campo: 'documentosSoporte',
+        mensaje:
+          'En modalidad no presencial hay que adjuntar al menos un documento ' +
+          `que acredite el valor (${DOCUMENTOS_QUE_ACREDITAN_VALOR.join(', ')}).`,
       });
     }
   }

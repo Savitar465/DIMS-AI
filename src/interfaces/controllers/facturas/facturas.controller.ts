@@ -6,16 +6,19 @@ import {
   Param,
   Post,
   Put,
-  UploadedFile,
+  Res,
+  StreamableFile,
+  UploadedFiles,
   UseInterceptors,
   HttpException,
   HttpStatus,
   BadRequestException,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { AnyFilesInterceptor } from '@nestjs/platform-express';
 import { ApiTags, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
 import { UploadFacturaUseCase } from '../../../core/application/usecases/facturas/upload-factura.usecase';
 import { GetFacturaUseCase } from '../../../core/application/usecases/facturas/get-factura.usecase';
+import { GetFacturaDocumentoUseCase } from '../../../core/application/usecases/facturas/get-factura-documento.usecase';
 import { UpdateFacturaUseCase } from '../../../core/application/usecases/facturas/update-factura.usecase';
 import { UpdateFacturaItemUseCase } from '../../../core/application/usecases/facturas/update-factura-item.usecase';
 import { ClasificarSubpartidasUseCase } from '../../../core/application/usecases/facturas/clasificar-subpartidas.usecase';
@@ -27,7 +30,8 @@ import {
   UploadFacturaDto,
 } from '../../dto/factura.dto';
 
-const MAX_SIZE = 10 * 1024 * 1024; // 10 MB
+const MAX_SIZE = 10 * 1024 * 1024; // 10 MB por archivo
+const MAX_ARCHIVOS = 5;
 const ALLOWED_MIMES = [
   'application/pdf',
   'image/jpeg',
@@ -41,6 +45,7 @@ export class FacturasController {
   constructor(
     private readonly uploadFacturaUseCase: UploadFacturaUseCase,
     private readonly getFacturaUseCase: GetFacturaUseCase,
+    private readonly getFacturaDocumentoUseCase: GetFacturaDocumentoUseCase,
     private readonly updateFacturaUseCase: UpdateFacturaUseCase,
     private readonly updateFacturaItemUseCase: UpdateFacturaItemUseCase,
     private readonly clasificarSubpartidasUseCase: ClasificarSubpartidasUseCase,
@@ -49,45 +54,98 @@ export class FacturasController {
 
   @Post()
   @HttpCode(201)
-  @ApiOperation({ summary: 'Cargar factura para extracción con IA' })
+  @ApiOperation({
+    summary: 'Cargar documentos de importación para extracción con IA',
+    description:
+      'Acepta la factura comercial y, opcionalmente, el packing list y la guía ' +
+      'de transporte (campo `archivos`, hasta 5). Cuantos más documentos se ' +
+      'carguen, más campos obligatorios de la DIMS quedan pre-llenados: los ' +
+      'pesos, los bultos y el nº de manifiesto casi nunca están en la factura. ' +
+      'Se mantiene el campo `archivo` (singular) por compatibilidad.',
+  })
   @ApiConsumes('multipart/form-data')
   @ApiBody({ type: UploadFacturaDto })
-  @UseInterceptors(FileInterceptor('archivo'))
-  async upload(@UploadedFile() archivo: Express.Multer.File) {
-    if (!archivo) {
+  // AnyFilesInterceptor acepta tanto `archivo` (contrato anterior) como
+  // `archivos[]`, sin romper a los clientes que ya suben un solo archivo.
+  @UseInterceptors(AnyFilesInterceptor())
+  async upload(@UploadedFiles() archivos: Express.Multer.File[]) {
+    if (!archivos?.length) {
       throw new BadRequestException({
-        error: { code: 'bad_request', message: 'Falta el archivo de factura.' },
+        error: {
+          code: 'bad_request',
+          message: 'Falta el archivo de factura.',
+        },
       });
     }
-    if (archivo.size > MAX_SIZE) {
-      throw new HttpException(
-        {
-          error: {
-            code: 'payload_too_large',
-            message: 'El archivo supera el límite de 10 MB.',
-          },
+    if (archivos.length > MAX_ARCHIVOS) {
+      throw new BadRequestException({
+        error: {
+          code: 'bad_request',
+          message: `Se pueden cargar hasta ${MAX_ARCHIVOS} documentos por declaración.`,
         },
-        HttpStatus.PAYLOAD_TOO_LARGE,
-      );
+      });
     }
-    if (!ALLOWED_MIMES.includes(archivo.mimetype)) {
-      throw new HttpException(
-        {
-          error: {
-            code: 'unsupported_media_type',
-            message: 'Tipo de archivo no soportado. Use PDF, JPG o PNG.',
+    for (const archivo of archivos) {
+      if (archivo.size > MAX_SIZE) {
+        throw new HttpException(
+          {
+            error: {
+              code: 'payload_too_large',
+              message: `El archivo "${archivo.originalname}" supera el límite de 10 MB.`,
+            },
           },
-        },
-        HttpStatus.UNSUPPORTED_MEDIA_TYPE,
-      );
+          HttpStatus.PAYLOAD_TOO_LARGE,
+        );
+      }
+      if (!ALLOWED_MIMES.includes(archivo.mimetype)) {
+        throw new HttpException(
+          {
+            error: {
+              code: 'unsupported_media_type',
+              message: `El archivo "${archivo.originalname}" no es compatible. Use PDF, JPG o PNG.`,
+            },
+          },
+          HttpStatus.UNSUPPORTED_MEDIA_TYPE,
+        );
+      }
     }
-    return this.uploadFacturaUseCase.execute(archivo.buffer, archivo.mimetype);
+    return this.uploadFacturaUseCase.execute(
+      archivos.map((a) => ({
+        buffer: a.buffer,
+        mimetype: a.mimetype,
+        originalname: a.originalname,
+      })),
+    );
   }
 
   @Get(':facturaId')
   @ApiOperation({ summary: 'Obtener factura y datos extraídos' })
   async getFactura(@Param('facturaId') facturaId: string) {
     return this.getFacturaUseCase.execute(facturaId);
+  }
+
+  @Get(':facturaId/documentos/:documentoId')
+  @ApiOperation({
+    summary: 'Descargar un documento original',
+    description:
+      'Devuelve el archivo tal como se subió, para poder verlo al lado del ' +
+      'formulario y contrastar los datos que extrajo la IA.',
+  })
+  async getDocumento(
+    @Param('facturaId') facturaId: string,
+    @Param('documentoId') documentoId: string,
+    @Res({ passthrough: true }) res: any,
+  ): Promise<StreamableFile> {
+    const { stream, documento } = await this.getFacturaDocumentoUseCase.execute(
+      facturaId,
+      documentoId,
+    );
+    res.set({
+      'Content-Type': documento.mimeType,
+      // `inline` para que se muestre embebido en vez de forzar una descarga.
+      'Content-Disposition': `inline; filename="${encodeURIComponent(documento.nombre)}"`,
+    });
+    return new StreamableFile(stream);
   }
 
   @Put(':facturaId')

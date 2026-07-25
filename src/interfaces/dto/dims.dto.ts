@@ -104,6 +104,13 @@ export class DimsUpdateDto {
   transporteHastaFrontera?: string;
 
   @ApiPropertyOptional({
+    description: 'Nº de manifiesto de carga / guía de transporte (AWB, B/L, carta de porte).',
+  })
+  @IsOptional()
+  @IsString()
+  manifiesto?: string;
+
+  @ApiPropertyOptional({
     type: Object,
     description: 'Información de la transacción: valorFobUsd, flete, seguro, bultos y pesos.',
   })
@@ -121,10 +128,44 @@ export class DimsUpdateDto {
   @IsString()
   infAdicional?: string;
 
+  @ApiPropertyOptional({
+    type: [String],
+    example: ['CM-003', 'OT-001'],
+    description:
+      'Códigos de los documentos soporte que se van a adjuntar. En no ' +
+      'presencial hay que incluir al menos uno que acredite el valor ' +
+      '(CM-003, CM-004 o CM-007).',
+  })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  documentosSoporte?: string[];
+
   @ApiPropertyOptional({ type: [Object] })
   @IsOptional()
   @IsArray()
   items?: FacturaItem[];
+
+  @ApiPropertyOptional({
+    type: Object,
+    description:
+      'Origen de cada campo (documento | sugerido | usuario). Distingue lo que ' +
+      'el usuario ya revisó de lo que sigue siendo una suposición del sistema.',
+  })
+  @IsOptional()
+  @IsObject()
+  origenes?: Record<string, string>;
+
+  @ApiPropertyOptional({
+    type: Object,
+    description:
+      'Confianza de la extracción por campo (0–100), con las mismas claves ' +
+      'que `origenes`. La calcula el servidor al crear la DIMS; se acepta en ' +
+      'el update para que el cliente pueda bajarla si el usuario corrige algo.',
+  })
+  @IsOptional()
+  @IsObject()
+  confianzas?: Record<string, number>;
 }
 
 export class ExportDimsDto {

@@ -6,6 +6,8 @@ import {
 import { FacturaEntity } from '../../../../infraestructure/persistance/entities/factura.entity';
 import {
   FacturaCabecera,
+  FacturaImportador,
+  FacturaLogistica,
   FacturaProveedor,
   FacturaTotales,
 } from '../../../domain/models/aduana';
@@ -15,6 +17,8 @@ export interface UpdateFacturaInput {
   proveedor?: FacturaProveedor;
   factura?: FacturaCabecera;
   totales?: FacturaTotales;
+  importador?: FacturaImportador;
+  logistica?: FacturaLogistica;
 }
 
 @Injectable()
@@ -35,6 +39,12 @@ export class UpdateFacturaUseCase {
     }
     if (input.totales) {
       factura.totales = { ...factura.totales, ...input.totales };
+    }
+    if (input.importador) {
+      factura.importador = { ...factura.importador, ...input.importador };
+    }
+    if (input.logistica) {
+      factura.logistica = { ...factura.logistica, ...input.logistica };
     }
     return this.facturaRepository.save(factura);
   }

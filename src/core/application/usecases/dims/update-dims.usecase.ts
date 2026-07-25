@@ -25,10 +25,14 @@ export interface UpdateDimsInput {
   parteRecepcionSiNo?: boolean;
   parteRecepcion?: string;
   transporteHastaFrontera?: string;
+  manifiesto?: string;
   transaccion?: DimsTransaccion;
   requiereInfAdicional?: boolean;
   infAdicional?: string;
+  documentosSoporte?: string[];
   items?: FacturaItem[];
+  origenes?: Record<string, string>;
+  confianzas?: Record<string, number>;
 }
 
 @Injectable()
@@ -67,11 +71,16 @@ export class UpdateDimsUseCase {
       dims.parteRecepcion = input.parteRecepcion;
     if (input.transporteHastaFrontera !== undefined)
       dims.transporteHastaFrontera = input.transporteHastaFrontera;
+    if (input.manifiesto !== undefined) dims.manifiesto = input.manifiesto;
     if (input.transaccion !== undefined) dims.transaccion = input.transaccion;
     if (input.requiereInfAdicional !== undefined)
       dims.requiereInfAdicional = input.requiereInfAdicional;
     if (input.infAdicional !== undefined) dims.infAdicional = input.infAdicional;
+    if (input.documentosSoporte !== undefined)
+      dims.documentosSoporte = input.documentosSoporte;
     if (input.items !== undefined) dims.items = input.items;
+    if (input.origenes !== undefined) dims.origenes = input.origenes;
+    if (input.confianzas !== undefined) dims.confianzas = input.confianzas;
 
     return this.dimsRepository.save(dims);
   }

@@ -20,6 +20,7 @@ import { LangChainAIService } from 'src/infraestructure/adapters/domain/langchai
 
 import { UploadFacturaUseCase } from 'src/core/application/usecases/facturas/upload-factura.usecase';
 import { GetFacturaUseCase } from 'src/core/application/usecases/facturas/get-factura.usecase';
+import { GetFacturaDocumentoUseCase } from 'src/core/application/usecases/facturas/get-factura-documento.usecase';
 import { UpdateFacturaUseCase } from 'src/core/application/usecases/facturas/update-factura.usecase';
 import { UpdateFacturaItemUseCase } from 'src/core/application/usecases/facturas/update-factura-item.usecase';
 import { ClasificarSubpartidasUseCase } from 'src/core/application/usecases/facturas/clasificar-subpartidas.usecase';
@@ -66,6 +67,7 @@ import { FlujoController } from 'src/interfaces/controllers/flujo/flujo.controll
     // Facturas
     UploadFacturaUseCase,
     GetFacturaUseCase,
+    GetFacturaDocumentoUseCase,
     UpdateFacturaUseCase,
     UpdateFacturaItemUseCase,
     ClasificarSubpartidasUseCase,

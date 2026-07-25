@@ -9,6 +9,8 @@ import {
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   FacturaCabecera,
+  FacturaImportador,
+  FacturaLogistica,
   FacturaProveedor,
   FacturaTotales,
 } from '../../core/domain/models/aduana';
@@ -28,6 +30,24 @@ export class FacturaUpdateDto {
   @IsOptional()
   @IsObject()
   totales?: FacturaTotales;
+
+  @ApiPropertyOptional({
+    type: Object,
+    description:
+      'Consignatario extraído del documento: nombreRazonSocial, numeroDocumento, domicilio, departamentoDestino.',
+  })
+  @IsOptional()
+  @IsObject()
+  importador?: FacturaImportador;
+
+  @ApiPropertyOptional({
+    type: Object,
+    description:
+      'Datos de la carga: cantidadBultos, pesoBrutoKg, pesoNetoKg, manifiesto, paisUltimaProcedencia, medioTransporte.',
+  })
+  @IsOptional()
+  @IsObject()
+  logistica?: FacturaLogistica;
 }
 
 export class UpdateFacturaItemDto {
@@ -65,8 +85,20 @@ export class UpdateFacturaItemDto {
 }
 
 export class UploadFacturaDto {
-  @ApiProperty({ type: 'string', format: 'binary' })
-  archivo: any;
+  @ApiProperty({
+    type: 'array',
+    items: { type: 'string', format: 'binary' },
+    description:
+      'Factura comercial y, opcionalmente, packing list y guía de transporte.',
+  })
+  archivos: any[];
+
+  @ApiPropertyOptional({
+    type: 'string',
+    format: 'binary',
+    description: 'Contrato anterior de un solo archivo. Sigue funcionando.',
+  })
+  archivo?: any;
 }
 
 export class AddFacturaItemDto {

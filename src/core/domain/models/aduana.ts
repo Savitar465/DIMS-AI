@@ -46,6 +46,59 @@ export interface FacturaTotales {
   cif?: number;
 }
 
+// Consignatario / "bill to" de la factura. Es el importador de la DIMS: casi
+// toda factura comercial lo trae, así que se extrae en vez de pedirlo a mano.
+export interface FacturaImportador {
+  tipoDocumento?: string;
+  numeroDocumento?: string;
+  nombreRazonSocial?: string;
+  domicilio?: string;
+  departamentoDestino?: string;
+  confidence?: number;
+}
+
+// Datos de la carga. Salen del packing list o de la guía de transporte, no de
+// la factura comercial: por eso la carga admite varios archivos.
+export interface FacturaLogistica {
+  cantidadBultos?: number;
+  pesoBrutoKg?: number;
+  pesoNetoKg?: number;
+  /** Nº de manifiesto / guía aérea (AWB) / carta de porte. */
+  manifiesto?: string;
+  /** País desde donde se despachó físicamente la carga. */
+  paisUltimaProcedencia?: string;
+  /** Código del medio de transporte: 1 marítimo, 3 carretero, 4 aéreo, 5 courier. */
+  medioTransporte?: string;
+  confidence?: number;
+}
+
+export type FacturaDocumentoTipo =
+  | 'factura'
+  | 'packingList'
+  | 'guiaTransporte'
+  | 'otro';
+
+export interface FacturaDocumento {
+  /** Identificador estable dentro de la factura: sirve para descargarlo. */
+  id?: string;
+  nombre: string;
+  mimeType: string;
+  tipo: FacturaDocumentoTipo;
+  /** false cuando la IA no pudo sacar nada útil de ese archivo. */
+  aporto: boolean;
+  /**
+   * Nombre del archivo original tal como quedó guardado, relativo a la carpeta
+   * de la factura. Se guarda para que el usuario pueda mirar el papel al lado
+   * del formulario y verificar lo que la IA leyó; sin eso, revisar un dato
+   * extraído obliga a abrir el PDF por fuera.
+   *
+   * Es solo el nombre, no la ruta completa: este objeto viaja al cliente en la
+   * respuesta de la API y la estructura de directorios del servidor no.
+   */
+  archivo?: string;
+  tamanoBytes?: number;
+}
+
 export interface Liquidacion {
   cif: number;
   ga: number;
@@ -83,6 +136,30 @@ export interface DimsTransaccion {
   pesoBruto?: number;
   pesoNeto?: number;
 }
+
+// Documentos soporte de la declaración. `acreditaValor` marca los que prueban
+// cuánto costó la mercadería: en menor cuantía y no presencial hay que
+// presentar al menos uno (Campos requeridos de la DIMS, §1.A).
+export interface DocumentoSoporte {
+  cod: string;
+  label: string;
+  acreditaValor: boolean;
+}
+
+export const DOCUMENTOS_SOPORTE: DocumentoSoporte[] = [
+  { cod: 'CM-003', label: 'Factura comercial del proveedor', acreditaValor: true },
+  { cod: 'CM-004', label: 'Factura de compra local', acreditaValor: true },
+  { cod: 'CM-007', label: 'Declaración jurada del valor', acreditaValor: true },
+  {
+    cod: 'OT-001',
+    label: 'Comprobante de recepción del depósito',
+    acreditaValor: false,
+  },
+];
+
+export const DOCUMENTOS_QUE_ACREDITAN_VALOR = DOCUMENTOS_SOPORTE.filter(
+  (d) => d.acreditaValor,
+).map((d) => d.cod);
 
 export interface ValidationIssue {
   nivel: 'error' | 'advertencia' | 'info';
