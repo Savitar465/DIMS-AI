@@ -666,14 +666,27 @@ export class LangChainAIService implements AIService {
     try {
       // If we have an image, send it as inline_data to GeminiClient (mime_type + base64); otherwise invoke normally
       let response: any;
+      // Pedirle el JSON a la API y no al prompt: sin esto el modelo devuelve el
+      // objeto envuelto en markdown o con una frase delante, y el parser falla
+      // aunque los datos estén bien. El fallback OpenAI ignora este bloque.
+      const generationConfig = {
+        responseMimeType: 'application/json',
+        temperature: 0,
+      };
       if (imageBase64 && typeof this.model.invoke === 'function') {
         response = await this.model.invoke(
           input,
           { mime_type: mimeType, data: imageBase64 },
           'extraccion-factura',
+          generationConfig,
         );
       } else {
-        response = await this.model.invoke(input, undefined, 'extraccion-factura');
+        response = await this.model.invoke(
+          input,
+          undefined,
+          'extraccion-factura',
+          generationConfig,
+        );
       }
       this.logUsoLangChain('extraccion-factura', response);
       const contentStr = this.normalizeModelResponse(response);
@@ -690,8 +703,12 @@ export class LangChainAIService implements AIService {
         sanitized = this.sanitizeModelJSON(contentStr);
         output = await parser.parse(sanitized);
       } catch (parseErr) {
+        // El motivo importa: si el JSON es válido y lo que falla es el schema,
+        // el fallback devuelve datos que nunca se validaron. Sin el mensaje del
+        // error los dos casos se ven idénticos en los logs.
         console.warn(
-          '[AI Extraction] StructuredOutputParser.parse failed, attempting JSON-extraction fallback',
+          '[AI Extraction] StructuredOutputParser.parse failed, attempting JSON-extraction fallback:',
+          parseErr instanceof Error ? parseErr.message : parseErr,
         );
         try {
           // First try a direct JSON.parse of the sanitized string
