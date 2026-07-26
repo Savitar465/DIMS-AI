@@ -3,11 +3,28 @@ export interface ClasificacionItemInput {
   descripcion: string;
 }
 
+export interface ClasificacionAlternativa {
+  subpartida: string;
+  porQueNo: string;
+}
+
 export interface ClasificacionItemOutput {
   id: string;
   subpartida: string | null;
+  /** 0–100. */
   confidence: number;
   razon?: string;
+  /** RGI invocadas por el modelo, p. ej. "RGI 1 y 6". */
+  reglaAplicada?: string;
+  /** Las que quedaron cerca, con el motivo del descarte. */
+  alternativas?: ClasificacionAlternativa[];
+  /**
+   * Qué faltó saber del producto para decidir (material, uso, potencia...).
+   * Con esto la UI puede preguntar en vez de aceptar una confianza baja.
+   */
+  datosFaltantes?: string[];
+  /** Texto enriquecido con el que se buscaron los candidatos. Para depurar. */
+  descripcionExpandida?: string;
 }
 
 export interface ExtraccionProducto {

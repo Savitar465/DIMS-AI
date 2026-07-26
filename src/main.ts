@@ -39,7 +39,7 @@ async function bootstrap() {
   }));
   // Enable CORS and accept all origins (disables origin validation)
 
-  await app.listen(3001);
+  await app.listen(parseInt(process.env.PORT, 10) || 3001);
   if (module.hot) {
     module.hot.accept();
     module.hot.dispose(() => app.close());

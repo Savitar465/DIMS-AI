@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsNumber,
   IsObject,
   IsOptional,
@@ -82,6 +83,15 @@ export class UpdateFacturaItemDto {
   @ValidateIf((o) => o.subpartida !== null)
   @IsString()
   subpartida?: string | null;
+
+  @ApiPropertyOptional({
+    description:
+      'true si la persona eligió el código a mano. Solo lo manda la acción explícita, nunca el autoguardado: con esta marca se registra la clasificación como aprendida.',
+    example: true,
+  })
+  @IsOptional()
+  @IsBoolean()
+  subpartidaConfirmada?: boolean;
 }
 
 export class UploadFacturaDto {

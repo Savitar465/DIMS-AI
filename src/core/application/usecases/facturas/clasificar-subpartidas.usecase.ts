@@ -1,4 +1,3 @@
-import { createHash } from 'crypto';
 import { Inject, Injectable, NotFoundException } from '@nestjs/common';
 import {
   AI_SERVICE,
@@ -12,6 +11,11 @@ import {
   CLASIFICACION_CACHE_REPOSITORY,
   ClasificacionCacheRepository,
 } from '../../../domain/ports/outbound/clasificacion-cache.repository';
+import {
+  CLASIFICACION_APRENDIDA_REPOSITORY,
+  ClasificacionAprendidaRepository,
+} from '../../../domain/ports/outbound/clasificacion-aprendida.repository';
+import { hashDescripcion } from '../../../domain/models/descripcion-hash';
 import { FacturaEntity } from '../../../../infraestructure/persistance/entities/factura.entity';
 
 @Injectable()
@@ -22,6 +26,8 @@ export class ClasificarSubpartidasUseCase {
     private readonly facturaRepository: FacturaRepository,
     @Inject(CLASIFICACION_CACHE_REPOSITORY)
     private readonly cacheRepository: ClasificacionCacheRepository,
+    @Inject(CLASIFICACION_APRENDIDA_REPOSITORY)
+    private readonly aprendidaRepository: ClasificacionAprendidaRepository,
   ) {}
 
   async execute(facturaId: string, force = false): Promise<FacturaEntity> {
@@ -39,20 +45,37 @@ export class ClasificarSubpartidasUseCase {
     const pendientes = force ? items : items.filter((it) => !it.clasificada);
     if (pendientes.length === 0) return factura;
 
-    // OPTIMIZACIÓN #3 — Lookup en cache antes de la IA.
-    // Hashea la descripción normalizada y resuelve hits desde DB.
+    // Tres niveles antes de gastar una llamada al modelo:
+    //   1. clasificacion_aprendida — confirmado por una persona. Es verdad, no
+    //      sugerencia, así que gana sobre todo lo demás.
+    //   2. clasificacion_cache — lo que respondió la IA para esta descripción.
+    //   3. el LLM.
+    // `force` saltea 1 y 2: es la vía para corregir una entrada aprendida que
+    // resultó estar mal, que si no quedaría fijada para siempre.
     const hashByItemId = new Map<string, string>();
     for (const it of pendientes) {
-      hashByItemId.set(it.id, this.hashDescripcion(it.descripcion));
+      hashByItemId.set(it.id, hashDescripcion(it.descripcion));
     }
     const uniqueHashes = [...new Set(hashByItemId.values())];
-    const cacheRows = await this.cacheRepository.findByHashes(uniqueHashes);
+
+    const aprendidasByHash = force
+      ? new Map<string, { subpartida: string }>()
+      : new Map(
+          (await this.aprendidaRepository.findByHashes(uniqueHashes)).map(
+            (r) => [r.hash, r],
+          ),
+        );
+
+    const cacheRows = force
+      ? []
+      : await this.cacheRepository.findByHashes(uniqueHashes);
     const cacheByHash = new Map(cacheRows.map((r) => [r.hash, r]));
 
     // Particionar entre hits y misses.
-    const itemsMiss = pendientes.filter(
-      (it) => !cacheByHash.has(hashByItemId.get(it.id)!),
-    );
+    const itemsMiss = pendientes.filter((it) => {
+      const h = hashByItemId.get(it.id)!;
+      return !aprendidasByHash.has(h) && !cacheByHash.has(h);
+    });
 
     let aiResults: Awaited<
       ReturnType<AIService['clasificarSubpartidasBatch']>
@@ -80,6 +103,21 @@ export class ClasificarSubpartidasUseCase {
     factura.items = items.map((it) => {
       if (force ? false : it.clasificada) return it;
       const hash = hashByItemId.get(it.id);
+      const aprendida = hash ? aprendidasByHash.get(hash) : undefined;
+
+      // Lo aprendido primero: ya lo confirmó una persona para esta misma
+      // descripción, así que no es una sugerencia de IA y no se marca como tal.
+      if (aprendida) {
+        return {
+          ...it,
+          subpartida: aprendida.subpartida,
+          confidence: 100,
+          aiSuggested: false,
+          clasificada: true,
+          razon: 'Confirmada antes por el usuario para esta misma descripción',
+        };
+      }
+
       const fromCache = hash ? cacheByHash.get(hash) : undefined;
       const fromAI = aiById.get(it.id);
       const r = fromAI ?? fromCache;
@@ -95,20 +133,5 @@ export class ClasificarSubpartidasUseCase {
     });
 
     return this.facturaRepository.save(factura);
-  }
-
-  // Hash sobre la descripción normalizada: minúsculas, sin acentos, sin
-  // puntuación, palabras únicas en orden ASC. Así "Mouse USB" y "USB Mouse"
-  // colapsan a la misma entrada del cache.
-  private hashDescripcion(desc: string): string {
-    const norm = (desc || '')
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[̀-ͯ]/g, '')
-      .split(/[^a-z0-9]+/)
-      .filter((t) => t.length > 0)
-      .sort()
-      .join(' ');
-    return createHash('sha256').update(norm).digest('hex');
   }
 }

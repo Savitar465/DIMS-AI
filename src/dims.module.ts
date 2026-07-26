@@ -6,16 +6,27 @@ import { FACTURA_REPOSITORY } from 'src/core/domain/ports/outbound/factura.repos
 import { DIMS_REPOSITORY } from 'src/core/domain/ports/outbound/dims.repository';
 import { AI_SERVICE } from 'src/core/domain/ports/outbound/ai.service';
 import { CLASIFICACION_CACHE_REPOSITORY } from 'src/core/domain/ports/outbound/clasificacion-cache.repository';
+import { CLASIFICACION_APRENDIDA_REPOSITORY } from 'src/core/domain/ports/outbound/clasificacion-aprendida.repository';
+import { EMBEDDING_SERVICE } from 'src/core/domain/ports/outbound/embedding.service';
+import { BUSQUEDA_SEMANTICA_REPOSITORY } from 'src/core/domain/ports/outbound/busqueda-semantica.repository';
+import { GeminiEmbeddingService } from 'src/infraestructure/adapters/domain/gemini-embedding.service';
+import { PgVectorBusquedaSemanticaRepository } from 'src/infraestructure/persistance/repositories/pgvector-busqueda-semantica.repository';
+import { BusquedaHibridaService } from 'src/core/application/services/busqueda-hibrida.service';
 
-import { SubpartidaEntity } from 'src/infraestructure/persistance/entities/subpartida.entity';
 import { FacturaEntity } from 'src/infraestructure/persistance/entities/factura.entity';
 import { DimsEntity } from 'src/infraestructure/persistance/entities/dims.entity';
 import { ClasificacionCacheEntity } from 'src/infraestructure/persistance/entities/clasificacion-cache.entity';
+import { ClasificacionAprendidaEntity } from 'src/infraestructure/persistance/entities/clasificacion-aprendida.entity';
 
-import { TypeOrmSubpartidaRepository } from 'src/infraestructure/persistance/repositories/typeorm-subpartida.repository';
+import { PgArancelSubpartidaRepository } from 'src/infraestructure/persistance/repositories/pg-arancel-subpartida.repository';
+import {
+  ArancelDataSourceCloser,
+  arancelDataSourceProvider,
+} from 'src/infraestructure/persistance/arancel.datasource';
 import { TypeOrmFacturaRepository } from 'src/infraestructure/persistance/repositories/typeorm-factura.repository';
 import { TypeOrmDimsRepository } from 'src/infraestructure/persistance/repositories/typeorm-dims.repository';
 import { TypeOrmClasificacionCacheRepository } from 'src/infraestructure/persistance/repositories/typeorm-clasificacion-cache.repository';
+import { TypeOrmClasificacionAprendidaRepository } from 'src/infraestructure/persistance/repositories/typeorm-clasificacion-aprendida.repository';
 import { LangChainAIService } from 'src/infraestructure/adapters/domain/langchain-ai.service';
 
 import { UploadFacturaUseCase } from 'src/core/application/usecases/facturas/upload-factura.usecase';
@@ -51,10 +62,10 @@ import { FlujoController } from 'src/interfaces/controllers/flujo/flujo.controll
 @Module({
   imports: [
     TypeOrmModule.forFeature([
-      SubpartidaEntity,
       FacturaEntity,
       DimsEntity,
       ClasificacionCacheEntity,
+      ClasificacionAprendidaEntity,
     ]),
   ],
   controllers: [
@@ -89,10 +100,22 @@ import { FlujoController } from 'src/interfaces/controllers/flujo/flujo.controll
     GetSubpartidaUseCase,
     // Flujo
     GetFlujoUseCase,
+    // Búsqueda híbrida (léxica + semántica)
+    BusquedaHibridaService,
+    {
+      provide: EMBEDDING_SERVICE,
+      useClass: GeminiEmbeddingService,
+    },
+    {
+      provide: BUSQUEDA_SEMANTICA_REPOSITORY,
+      useClass: PgVectorBusquedaSemanticaRepository,
+    },
     // Adapters
+    arancelDataSourceProvider,
+    ArancelDataSourceCloser,
     {
       provide: SUBPARTIDA_REPOSITORY,
-      useClass: TypeOrmSubpartidaRepository,
+      useClass: PgArancelSubpartidaRepository,
     },
     {
       provide: FACTURA_REPOSITORY,
@@ -109,6 +132,10 @@ import { FlujoController } from 'src/interfaces/controllers/flujo/flujo.controll
     {
       provide: CLASIFICACION_CACHE_REPOSITORY,
       useClass: TypeOrmClasificacionCacheRepository,
+    },
+    {
+      provide: CLASIFICACION_APRENDIDA_REPOSITORY,
+      useClass: TypeOrmClasificacionAprendidaRepository,
     },
   ],
 })
