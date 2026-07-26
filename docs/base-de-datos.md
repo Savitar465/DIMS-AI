@@ -166,7 +166,110 @@ código aparecen tres:
 
 ## 3. Puesta en marcha
 
-### 3.1 Variables de entorno
+Los pasos van en orden. Si algo falla, la sección 7 tiene el diagnóstico.
+
+### 3.1 Requisitos
+
+| Herramienta | Versión | Para qué |
+| --- | --- | --- |
+| PostgreSQL | **13 o superior** (probado en 17.10) | Las dos bases |
+| Node.js | 18 o superior (probado en 24) | El backend y los scripts |
+| `psql` | cualquiera reciente | Aplicar las migraciones |
+
+Por qué PostgreSQL 13 como mínimo:
+
+- `websearch_to_tsquery` y `regexp_match`, que usa la función de búsqueda,
+  existen desde la 11.
+- Desde la **13**, `unaccent` y `pg_trgm` son extensiones *confiables*
+  (`trusted`) y las puede instalar el dueño de la base sin ser superusuario.
+  En versiones anteriores hace falta superusuario sí o sí.
+
+`psql` no es estrictamente necesario —sirve cualquier cliente SQL— pero es el
+único que corta la ejecución ante el primer error, que es lo que evita dejar la
+base a medias.
+
+### 3.2 Extensiones necesarias
+
+Las tres van en la base **`aranceles`**. La base de la app no necesita ninguna.
+
+| Extensión | Para qué | ¿Superusuario? |
+| --- | --- | --- |
+| `unaccent` | Que `articulo` encuentre `artículo` | No en PG 13+ (es *trusted*) |
+| `pg_trgm` | Tolerancia a errores de tipeo | No en PG 13+ (es *trusted*) |
+| `vector` (pgvector) | Búsqueda semántica | **Sí**, o un proveedor que lo habilite |
+
+**`vector` es la que da problemas.** No es una extensión *trusted*: en un
+Postgres propio necesitás conectarte como superusuario (`postgres`) para
+instalarla, y encima tiene que estar compilada en el servidor. En los
+gestionados suele venir habilitada aunque el usuario no sea superusuario: en
+esta instalación, `avnadmin` no es superusuario y aun así pudo instalarla,
+porque Aiven la ofrece explícitamente.
+
+Verificá qué tenés disponible antes de empezar:
+
+```sql
+SELECT v.name, v.version, v.superuser AS requiere_superusuario, v.trusted
+FROM pg_available_extension_versions v
+WHERE v.name IN ('unaccent', 'pg_trgm', 'vector');
+```
+
+Si `vector` no aparece, **el proyecto igual funciona**: la búsqueda semántica es
+opcional y queda desactivada sola. Podés saltear la migración `004` y volver
+cuando la tengas.
+
+Las migraciones ejecutan los `CREATE EXTENSION`, así que no hace falta crearlas
+a mano — pero si el usuario no tiene permiso, ahí es donde va a fallar.
+
+### 3.3 Configuración de búsqueda en español
+
+La migración `001` crea una configuración propia, `es_unaccent`, copiando la
+`spanish` que trae Postgres y encadenándole el diccionario `unaccent`.
+
+Eso supone que tu instalación **tiene la configuración `spanish`**. Viene de
+fábrica en cualquier build estándar, pero conviene confirmarlo:
+
+```sql
+SELECT count(*) FROM pg_ts_config WHERE cfgname = 'spanish';   -- debe dar 1
+```
+
+Si diera 0, el servidor se compiló sin los diccionarios de español y hay que
+resolverlo antes de seguir: sin eso no hay búsqueda.
+
+### 3.4 Crear las bases
+
+Hacen falta **dos**: `dimsai` (la app) y `aranceles` (el arancel). Pueden vivir
+en la misma instancia.
+
+**En un servicio gestionado** (Aiven, RDS, Cloud SQL): crealas desde el panel y
+asegurate de que el usuario sea dueño de ambas. En Aiven, pgvector se habilita
+desde la consola del servicio.
+
+**En local con Docker**, conviene una imagen que ya traiga pgvector — con la
+imagen oficial de Postgres habría que compilarla a mano:
+
+```yaml
+# postgres.yml
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: dimsai
+    ports: ['5432:5432']
+    volumes: ['pgdata:/var/lib/postgresql/data']
+volumes:
+  pgdata:
+```
+
+```bash
+docker compose -f postgres.yml up -d
+docker compose -f postgres.yml exec postgres psql -U postgres -c "CREATE DATABASE aranceles;"
+```
+
+Con esa imagen el usuario `postgres` es superusuario, así que las tres
+extensiones se instalan sin fricción.
+
+### 3.5 Variables de entorno
 
 ```bash
 cp .env.example .env
@@ -177,11 +280,61 @@ para que la búsqueda funcione son las dos conexiones. `GEMINI_API_KEY` solo hac
 falta para clasificar y para generar embeddings: **la búsqueda manual anda sin
 ella**.
 
-### 3.2 Preparar la base del arancel
+Dos que se pasan por alto:
 
-Los datos de origen (`"Arancel Completo 2026"` y `"Notas Tecnicas"` en el
-esquema `buscador_arancelario`) se cargan por fuera de este proyecto. Con eso ya
-en la base, se aplican las migraciones **en orden**:
+- `ARANCEL_DB_SSL=true` si el servidor exige TLS. Casi todos los gestionados lo
+  hacen; en local con Docker va en `false`.
+- `ARANCEL_DB_NAME` apunta a `aranceles`, **no** a `dimsai`. Es el error más
+  fácil de cometer cuando las dos están en el mismo servidor.
+
+### 3.6 Cargar los datos del arancel
+
+Las tablas de origen se cargan **por fuera de este proyecto** (desde la planilla
+oficial), en el esquema `buscador_arancelario` de la base `aranceles`:
+
+| Tabla | Filas esperadas |
+| --- | --- |
+| `"Arancel Completo 2026"` | 11.773 |
+| `"Notas Tecnicas"` | 98 (una por capítulo, del 01 al 98) |
+
+Los nombres llevan comillas porque tienen espacios. Se respetan tal cual para no
+romper el proceso de carga que las genera.
+
+De las 86 columnas de la primera, la búsqueda depende de estas. Si la carga
+cambia sus nombres, la migración `001` falla:
+
+`id`, `nc_order`, `ID_Unico`, `Codigo`, `Seccion`, `Descripcion_Seccion`,
+`Descripcion_Capitulo`, `Descripcion_Mercancia`,
+`Descripcion_Completa_Normalizada`, `Descripcion_Completa_Normalizada_Original`,
+`Descripciones_Minimas_1` a `_6`, `Unidad_de_Medida`, `ga`, `iva`,
+`Mercancia_Prohibida_De_Importacion`.
+
+De `"Notas Tecnicas"`: `id`, `nc_order`, `capitulo`, `descripcion_capitulo`,
+`seccion`, `descripcion_seccion`, `nota_capitulo`, `nota_seccion`.
+
+> Las columnas `Padre_Nivel_0` a `_4` **ya no se usan**. Venían para reconstruir
+> la jerarquía, pero están incompletas en ambos sentidos y daban un árbol
+> equivocado (ver 2.1). La jerarquía se deduce del prefijo del código.
+
+Comprobá la carga antes de seguir:
+
+```sql
+SELECT count(*) AS filas,
+       count(*) FILTER (WHERE "Codigo" IS NOT NULL) AS con_codigo,
+       count(*) FILTER (WHERE "Descripcion_Completa_Normalizada_Original" IS NOT NULL) AS con_ruta
+FROM buscador_arancelario."Arancel Completo 2026";
+
+-- Deben estar los 98 capítulos, sin huecos
+SELECT count(DISTINCT capitulo) FROM buscador_arancelario."Notas Tecnicas";
+```
+
+Si faltan notas de algún capítulo, los ítems que caigan ahí se clasifican sin
+sus exclusiones legales. Ya pasó con el capítulo 07 y por eso existe la
+migración `005`.
+
+### 3.7 Aplicar las migraciones
+
+Con los datos ya cargados, se aplican **en orden**:
 
 ```bash
 # Cadena de conexión a la base del arancel (mismos valores que ARANCEL_DB_* del
@@ -219,30 +372,57 @@ Son **idempotentes**: se pueden volver a correr tal cual.
 > No hay ejecutor automático de migraciones. Se aplican a mano, con `psql` o
 > cualquier cliente. Es una deuda conocida.
 
-### 3.3 Preparar la base de la app
+### 3.8 Preparar la base de la app
 
 No hay que hacer nada: TypeORM crea las tablas al arrancar (`synchronize: true`).
+Se crean `facturas`, `dims`, `clasificacion_cache` y `clasificacion_aprendida`.
 
-### 3.4 Verificar
+Basta con que la base exista y que el usuario pueda crear tablas en ella.
+
+### 3.9 Verificar
+
+Cada consulta prueba una capa distinta, en orden. Si una falla, no tiene sentido
+seguir con la siguiente.
 
 ```sql
--- Debe dar 8132 y 0
+-- 1. Extensiones instaladas: deben estar las tres (o dos, sin pgvector)
+SELECT extname, extversion FROM pg_extension ORDER BY extname;
+
+-- 2. Configuración FTS: debe devolver 'automat':2 'maquin':1
+--    (sin acentos y con las raíces recortadas)
+SELECT to_tsvector('buscador_arancelario.es_unaccent', 'Máquinas automáticas');
+
+-- 3. Vista materializada: debe dar 8132 y 0
 SELECT count(*) AS hojas,
        count(*) FILTER (WHERE length(codigo) <> 10) AS no_declarables
 FROM buscador_arancelario.arancel_busqueda;
 
--- Debe devolver 8471.30.00.90 — prueba extensiones, FTS, vista y sinónimos
-SELECT codigo_fmt FROM buscador_arancelario.buscar_subpartidas('laptop', 1);
-```
+-- 4. Índices de la vista: deben ser 10
+SELECT count(*) FROM pg_indexes
+WHERE schemaname = 'buscador_arancelario' AND tablename = 'arancel_busqueda';
 
-Si lo segundo devuelve vacío pero lo primero da 8132, casi seguro falta correr
-`003` o falló la creación de la configuración `es_unaccent`.
+-- 5. Búsqueda por texto: debe devolver 0901.21.20.00
+SELECT codigo_fmt FROM buscador_arancelario.buscar_subpartidas('cafe tostado molido', 1);
+
+-- 6. Sinónimos: debe devolver 8471.30.00.90. La palabra "laptop" NO existe en
+--    el arancel, así que si esto encuentra algo, la expansión de la migración
+--    003 está activa.
+SELECT codigo_fmt FROM buscador_arancelario.buscar_subpartidas('laptop', 1);
+
+-- 7. Funciones del prompt del LLM: 24 candidatos y 2 notas (capítulo y sección)
+SELECT count(*) FROM buscador_arancelario.candidatos_clasificacion('cafe molido', 24);
+SELECT count(*) FROM buscador_arancelario.notas_para_prompt(ARRAY['09']);
+```
 
 Y de punta a punta:
 
 ```bash
 npm run start:dev
 curl "http://localhost:3001/api/arancel/subpartidas?q=cafe%20tostado%20molido"
+
+# La prueba más completa: 32 casos contra las dos bases reales, sin gastar
+# cuota de la API (el modelo se reemplaza por un doble).
+npm run test:integration
 ```
 
 ---
@@ -417,11 +597,18 @@ SELECT * FROM buscador_arancelario.buscar_subpartidas('cafe tostado molido', 40)
 
 | Síntoma | Causa probable |
 | --- | --- |
+| `permission denied to create extension "vector"` | pgvector no es *trusted*: hace falta superusuario o habilitarla en el panel del proveedor. Se puede saltear `004` |
+| `permission denied to create extension "unaccent"` | PostgreSQL anterior a la 13, donde tampoco es *trusted*. Correr como superusuario |
+| `text search configuration "spanish" does not exist` | El servidor se compiló sin los diccionarios de español (ver 3.3) |
+| `relation "Arancel Completo 2026" does not exist` | Los datos de origen no están cargados, o están en otra base o esquema |
+| `column "..." does not exist` al correr `001` | La carga cambió los nombres de columna (ver 3.6) |
+| `arancel_busqueda` con menos de 8.132 filas | La carga de datos quedó incompleta |
 | La búsqueda no devuelve nada, para cualquier consulta | Falta `003`, o falló `es_unaccent` |
 | `laptop` no encuentra nada pero `computadora` sí | Falta la tabla `sinonimos` o quedó vacía |
 | Búsquedas de ~500 ms en vez de ~35 ms | Faltan los índices GIN de `001` |
 | La semántica nunca se usa | Cobertura bajo el 98 %, o falta `GEMINI_API_KEY` |
-| 429 al clasificar | Cuota de Gemini; bajar `LLM_CONCURRENCIA` o usar key de pago |
+| 429 al clasificar | Cuota de Gemini; bajar `LLM_CONCURRENCIA`, subir `LLM_ITEMS_POR_LLAMADA` o usar key de pago |
+| Búsquedas vacías con datos cargados | `ARANCEL_DB_NAME` apunta a `dimsai` en vez de `aranceles` |
 
 ### Pruebas
 
