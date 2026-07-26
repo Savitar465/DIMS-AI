@@ -87,6 +87,15 @@ export interface FacturaDocumento {
   /** false cuando la IA no pudo sacar nada útil de ese archivo. */
   aporto: boolean;
   /**
+   * Por qué no aportó, cuando `aporto` es false. Sin esto el cliente solo ve un
+   * documento que "no sirvió" y no puede decirle al usuario si tiene que volver
+   * a subirlo, reintentar, o si cargó el archivo equivocado.
+   */
+  error?: {
+    codigo: string;
+    mensaje: string;
+  };
+  /**
    * Nombre del archivo original tal como quedó guardado, relativo a la carpeta
    * de la factura. Se guarda para que el usuario pueda mirar el papel al lado
    * del formulario y verificar lo que la IA leyó; sin eso, revisar un dato

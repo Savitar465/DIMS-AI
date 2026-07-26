@@ -7,12 +7,14 @@ import {
   AI_SERVICE,
   AIService,
   ExtraccionFactura,
+  extraccionAportoDatos,
 } from '../../../domain/ports/outbound/ai.service';
 import {
   FACTURA_REPOSITORY,
   FacturaRepository,
 } from '../../../domain/ports/outbound/factura.repository';
 import { FacturaEntity } from '../../../../infraestructure/persistance/entities/factura.entity';
+import { ExtraccionFallidaError } from '../../../domain/errors/extraccion-fallida.error';
 import {
   FacturaDocumento,
   FacturaDocumentoTipo,
@@ -148,7 +150,10 @@ export class UploadFacturaUseCase {
       factura.logistica = {};
       factura.items = [];
       factura.totales = {};
-      return this.facturaRepository.save(factura);
+      // Se guarda igual: los archivos ya están en disco y el usuario tiene que
+      // poder mirarlos y reintentar sobre la misma factura.
+      await this.facturaRepository.save(factura);
+      throw new ExtraccionFallidaError(factura.id, factura.documentos);
     }
 
     // Para los datos comerciales manda la factura; para los de carga, la guía
@@ -328,16 +333,43 @@ export class UploadFacturaUseCase {
         archivo.buffer,
         archivo.mimetype,
       );
+      const aporto = this.aportoAlgo(extraccion);
+      if (!aporto) {
+        console.warn(
+          `[Upload] "${nombre}" no aportó datos: ${extraccion.error?.codigo ?? 'sin_datos'} — ${extraccion.error?.detalle ?? extraccion.error?.mensaje ?? ''}`,
+        );
+      }
       return {
         extraccion,
         documento: {
           ...base,
           tipo: this.tipoDocumento(extraccion, nombre),
-          aporto: this.aportoAlgo(extraccion),
+          aporto,
+          // El detalle técnico queda en el log, no en la respuesta: al cliente
+          // le sirve el código para decidir qué ofrecer y el mensaje para
+          // mostrarlo tal cual.
+          error: aporto
+            ? undefined
+            : {
+                codigo: extraccion.error?.codigo ?? 'sin_datos',
+                mensaje:
+                  extraccion.error?.mensaje ??
+                  'La IA no reconoció datos aprovechables en este documento.',
+              },
         },
       };
-    } catch {
-      return { extraccion: {}, documento: base };
+    } catch (e) {
+      console.error(`[Upload] Error leyendo "${nombre}":`, e);
+      return {
+        extraccion: {},
+        documento: {
+          ...base,
+          error: {
+            codigo: 'error_interno',
+            mensaje: 'No se pudo procesar el documento.',
+          },
+        },
+      };
     }
   }
 
@@ -364,15 +396,10 @@ export class UploadFacturaUseCase {
   }
 
   private aportoAlgo(e: ExtraccionFactura): boolean {
-    return Boolean(
-      e.proveedor?.nombre ||
-        e.factura?.numero ||
-        e.importador?.nombreRazonSocial ||
-        e.logistica?.pesoBrutoKg ||
-        e.logistica?.cantidadBultos ||
-        e.logistica?.manifiesto ||
-        (e.productos?.length ?? 0) > 0,
-    );
+    // La regla vive junto al contrato: el adaptador la usa para marcar el error
+    // `sin_datos` y acá se decide si el documento entra al consenso. Si las dos
+    // se separan, un documento puede venir marcado con error y aun así aportar.
+    return extraccionAportoDatos(e);
   }
 
   private tipoDocumento(

@@ -27,6 +27,32 @@ export interface ClasificacionItemOutput {
   descripcionExpandida?: string;
 }
 
+/**
+ * Por qué no se pudo leer un documento. Se distinguen porque la acción del
+ * usuario es distinta en cada caso: un PDF escaneado hay que volver a subirlo
+ * como imagen, un fallo del modelo se reintenta, y un documento que la IA leyó
+ * pero no reconoció como comercial probablemente esté mal cargado.
+ */
+export type ExtraccionErrorCodigo =
+  /** El archivo no tiene texto legible (PDF escaneado sin OCR, archivo vacío). */
+  | 'documento_ilegible'
+  /** La IA no respondió: error de red, cuota agotada, bloqueo por seguridad. */
+  | 'ia_sin_respuesta'
+  /** Respondió, pero no se pudo interpretar como el JSON pedido. */
+  | 'respuesta_ilegible'
+  /** Leyó el documento pero no reconoció ningún dato aprovechable. */
+  | 'sin_datos'
+  /** Cualquier otro fallo al procesar el archivo. */
+  | 'error_interno';
+
+export interface ExtraccionError {
+  codigo: ExtraccionErrorCodigo;
+  /** Mensaje en español, apto para mostrarle al usuario. */
+  mensaje: string;
+  /** Motivo técnico, para el log y el soporte. No es para la UI. */
+  detalle?: string;
+}
+
 export interface ExtraccionProducto {
   descripcion: string;
   cantidad: number;
@@ -80,7 +106,31 @@ export interface ExtraccionFactura {
     seguro?: number | null;
   } | null;
   productos?: ExtraccionProducto[] | null;
+  /**
+   * Por qué la lectura no se pudo hacer. Ausente cuando salió bien. Va acá y no
+   * como excepción porque un documento ilegible entre varios no invalida la
+   * carga: el resto se procesa igual y el usuario tiene que poder ver cuál
+   * falló y por qué.
+   */
+  error?: ExtraccionError;
   debug?: any;
+}
+
+/**
+ * ¿La lectura trajo al menos un dato utilizable para la DIMS? Vive acá, junto
+ * al contrato, porque la usan los dos lados: el adaptador para marcar el error
+ * `sin_datos` y el caso de uso para decidir si el documento aportó algo.
+ */
+export function extraccionAportoDatos(e: ExtraccionFactura): boolean {
+  return Boolean(
+    e.proveedor?.nombre ||
+      e.factura?.numero ||
+      e.importador?.nombreRazonSocial ||
+      e.logistica?.pesoBrutoKg ||
+      e.logistica?.cantidadBultos ||
+      e.logistica?.manifiesto ||
+      (e.productos?.length ?? 0) > 0,
+  );
 }
 
 export interface AIService {

@@ -17,6 +17,7 @@ import {
 import { AnyFilesInterceptor } from '@nestjs/platform-express';
 import { ApiTags, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
 import { UploadFacturaUseCase } from '../../../core/application/usecases/facturas/upload-factura.usecase';
+import { ExtraccionFallidaError } from '../../../core/domain/errors/extraccion-fallida.error';
 import { GetFacturaUseCase } from '../../../core/application/usecases/facturas/get-factura.usecase';
 import { GetFacturaDocumentoUseCase } from '../../../core/application/usecases/facturas/get-factura-documento.usecase';
 import { UpdateFacturaUseCase } from '../../../core/application/usecases/facturas/update-factura.usecase';
@@ -109,13 +110,35 @@ export class FacturasController {
         );
       }
     }
-    return this.uploadFacturaUseCase.execute(
-      archivos.map((a) => ({
-        buffer: a.buffer,
-        mimetype: a.mimetype,
-        originalname: a.originalname,
-      })),
-    );
+    try {
+      return await this.uploadFacturaUseCase.execute(
+        archivos.map((a) => ({
+          buffer: a.buffer,
+          mimetype: a.mimetype,
+          originalname: a.originalname,
+        })),
+      );
+    } catch (e) {
+      // 422 y no 500: el servidor funcionó, lo que no se pudo leer es lo que
+      // subió el usuario. `facturaId` viaja porque la factura quedó guardada
+      // con sus archivos: desde ahí se puede mirar el original y reintentar.
+      if (e instanceof ExtraccionFallidaError) {
+        throw new HttpException(
+          {
+            error: {
+              code: 'extraccion_fallida',
+              message: e.message,
+              details: {
+                facturaId: e.facturaId,
+                documentos: e.detallePorDocumento,
+              },
+            },
+          },
+          HttpStatus.UNPROCESSABLE_ENTITY,
+        );
+      }
+      throw e;
+    }
   }
 
   @Get(':facturaId')

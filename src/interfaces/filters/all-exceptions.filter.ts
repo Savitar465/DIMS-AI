@@ -87,6 +87,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
       409: 'conflict',
       413: 'payload_too_large',
       415: 'unsupported_media_type',
+      422: 'unprocessable_entity',
       500: 'internal_error',
     };
     return map[status] ?? 'error';

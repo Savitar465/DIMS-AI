@@ -5,6 +5,7 @@ import {
   ClasificacionItemInput,
   ClasificacionItemOutput,
   ExtraccionFactura,
+  extraccionAportoDatos,
 } from 'src/core/domain/ports/outbound/ai.service';
 import {
   CandidatoSubpartida,
@@ -32,6 +33,19 @@ const pdf = require('pdf-parse');
 // El objetivo es sacar del papel la mayor cantidad posible de campos
 // obligatorios de la DIMS. Todo es nullable a propósito: el modelo debe decir
 // "no está" en vez de inventar, porque después el usuario firma la declaración.
+
+/**
+ * ¿Está pedida la traza de las llamadas al LLM? Apagada salvo que se pida:
+ * imprime prompts de decenas de miles de caracteres y el contenido de las
+ * facturas, así que en producción solo ensucia el log y filtra datos del
+ * cliente.
+ *
+ *   LLM_DEBUG=1         → request y respuesta (prompt recortado)
+ *   LLM_DEBUG_PROMPT=1  → además, prompt y responseSchema completos
+ */
+function debugLLM(): boolean {
+  return process.env.LLM_DEBUG === '1' || process.env.LLM_DEBUG_PROMPT === '1';
+}
 
 const nullableString = () => z.string().nullable().optional();
 const nullableNumber = () => z.number().nullable().optional();
@@ -269,6 +283,84 @@ class GeminiClient {
     return uso;
   }
 
+  /**
+   * Log de lo que sale hacia la API. El prompt puede tener 60k caracteres y la
+   * imagen viene en base64, así que por defecto se loguea un recorte y los
+   * tamaños; con `LLM_DEBUG_PROMPT=1` se imprime el prompt entero (la imagen
+   * nunca: son megas de base64 que no se leen en una consola).
+   */
+  private logPeticion(
+    label: string,
+    modelo: string,
+    url: string,
+    prompt: string,
+    inlineData?: { mime_type: string; data: string },
+    generationConfig?: Record<string, any>,
+  ): void {
+    if (!debugLLM()) return;
+    const completo = process.env.LLM_DEBUG_PROMPT === '1';
+    console.log(
+      `[LLM Request] ${label} model=${modelo} url=${url} promptChars=${prompt.length}` +
+        (inlineData?.data
+          ? ` inlineData=${inlineData.mime_type} base64Chars=${inlineData.data.length} (~${Math.round((inlineData.data.length * 3) / 4 / 1024)} KB)`
+          : ' inlineData=no') +
+        (generationConfig
+          ? ` generationConfig=${JSON.stringify({
+              ...generationConfig,
+              responseSchema: generationConfig.responseSchema
+                ? '<schema>'
+                : undefined,
+            })}`
+          : ' generationConfig=default'),
+    );
+    if (generationConfig?.responseSchema) {
+      console.log(
+        `[LLM Request] ${label} responseSchema=${JSON.stringify(generationConfig.responseSchema).slice(0, completo ? 100000 : 1500)}`,
+      );
+    }
+    console.log(
+      `[LLM Request] ${label} prompt${completo ? '' : ' (recortado)'}:\n${completo ? prompt : prompt.slice(0, 2000)}`,
+    );
+  }
+
+  /**
+   * Log de lo que volvió. `finishReason` es el dato clave cuando el JSON llega
+   * incompleto o vacío: MAX_TOKENS significa que la respuesta se cortó (típico
+   * con modelos con razonamiento), SAFETY/RECITATION que se bloqueó.
+   */
+  private logRespuesta(json: any, label: string, modelo: string): void {
+    const cand = json?.candidates?.[0];
+    const finish = cand?.finishReason ?? cand?.finish_reason ?? '(sin finishReason)';
+    const bloqueo =
+      json?.promptFeedback?.blockReason ?? json?.prompt_feedback?.block_reason;
+    const texto = Array.isArray(cand?.content?.parts)
+      ? cand.content.parts.map((p: any) => p?.text ?? '').join('')
+      : '';
+
+    // Una respuesta 200 sin texto es siempre un problema (corte por MAX_TOKENS,
+    // bloqueo por seguridad) y termina en una extracción vacía: ese caso se
+    // avisa aunque el debug esté apagado, porque sin él no queda rastro.
+    if (!texto) {
+      console.warn(
+        `[LLM Response] ${label} model=${modelo} respuesta sin texto — finishReason=${finish}` +
+          (bloqueo ? ` blockReason=${bloqueo}` : '') +
+          `. Cuerpo crudo: ${JSON.stringify(json ?? {}).slice(0, 2000)}`,
+      );
+      return;
+    }
+
+    if (!debugLLM()) return;
+    console.log(
+      `[LLM Response] ${label} model=${modelo} finishReason=${finish}` +
+        (bloqueo ? ` blockReason=${bloqueo}` : '') +
+        ` candidates=${Array.isArray(json?.candidates) ? json.candidates.length : 0}` +
+        ` textChars=${texto.length}`,
+    );
+    console.log(
+      `[LLM Response] ${label} texto (recortado): ${texto.slice(0, 2000)}`,
+    );
+  }
+
   async invoke(
     prompt: string,
     inlineData?: { mime_type: string; data: string },
@@ -354,6 +446,14 @@ class GeminiClient {
         console.debug(
           `GeminiClient: attempting ${attempt.desc} -> ${attempt.url}`,
         );
+        this.logPeticion(
+          label,
+          normalizedModel,
+          attempt.url,
+          prompt,
+          inlineData,
+          generationConfig,
+        );
         const res = await tryRequest(attempt.url, attempt.body, headers);
         if (!res.ok) {
           const txt = await res.text().catch(() => '<unreadable response>');
@@ -431,6 +531,7 @@ class GeminiClient {
                         continue;
                       }
                       const fmJson = await fmRes.json().catch(() => ({}));
+                      this.logRespuesta(fmJson, label, fm);
                       const fmCandidate =
                         fmJson?.candidates?.[0]?.content ??
                         (fmJson?.candidates?.[0]?.parts
@@ -502,6 +603,7 @@ class GeminiClient {
                   continue;
                 }
                 const fmJson = await fmRes.json().catch(() => ({}));
+                this.logRespuesta(fmJson, label, fm);
                 const fmCandidate =
                   fmJson?.candidates?.[0]?.content ??
                   (fmJson?.candidates?.[0]?.parts
@@ -529,6 +631,7 @@ class GeminiClient {
         }
 
         const json = await res.json().catch(() => ({}));
+        this.logRespuesta(json, label, normalizedModel);
         // Parse common shapes from generateContent / generateText / generateMessage
         const candidate =
           json?.candidates?.[0]?.content ??
@@ -647,9 +750,32 @@ export class LangChainAIService implements AIService {
       text = fileBuffer.toString('utf-8');
     }
 
-    console.log(
-      `[AI Extraction] Procesando texto de factura de longitud: ${(text ?? '').length}`,
-    );
+    if (debugLLM()) {
+      console.log(
+        `[AI Extraction] Procesando texto de factura de longitud: ${(text ?? '').length}`,
+      );
+    }
+
+    // Un PDF escaneado sin capa de texto llega acá vacío: mandarlo igual gasta
+    // una llamada para que el modelo conteste todo null, y el usuario ve un
+    // "no se encontraron datos" que no explica nada. El caso tiene arreglo
+    // concreto —volver a subirlo como imagen— así que se nombra.
+    if (!imageBase64 && !(text ?? '').trim()) {
+      console.warn(
+        `[AI Extraction] El documento (${mimeType}) no tiene texto legible; no se llama al modelo.`,
+      );
+      return {
+        productos: [],
+        error: {
+          codigo: 'documento_ilegible',
+          mensaje:
+            mimeType === 'application/pdf'
+              ? 'El PDF no tiene texto legible: parece ser un escaneo. Subilo como imagen (JPG o PNG) para que la IA pueda leerlo.'
+              : 'El documento está vacío o no se pudo leer su contenido.',
+          detalle: `mimeType=${mimeType}, caracteres extraídos=0`,
+        },
+      };
+    }
 
     const parser = StructuredOutputParser.fromZodSchema(
       EXTRACCION_SCHEMA as any,
@@ -689,13 +815,44 @@ export class LangChainAIService implements AIService {
         );
       }
       this.logUsoLangChain('extraccion-factura', response);
-      const contentStr = this.normalizeModelResponse(response);
-      console.log(
-        `[AI Extraction] Normalized LLM response length: ${contentStr?.length}`,
-      );
-      console.log(
-        `[AI Extraction] Normalized LLM response (truncated): ${contentStr?.slice(0, 1000)}`,
-      );
+      // `textoDeRespuesta` y no `normalizeModelResponse`: generateContent
+      // devuelve `{content: {parts: [{text}], role}}` y el normalizador legacy
+      // no desenvuelve esa forma — stringificaba el sobre entero, que es JSON
+      // válido, así que el parser lo aceptaba y devolvía una extracción con
+      // todos los campos en null aunque el modelo hubiera contestado bien.
+      const contentStr = this.textoDeRespuesta(response);
+      if (debugLLM()) {
+        console.log(
+          `[AI Extraction] Normalized LLM response length: ${contentStr?.length}`,
+        );
+        console.log(
+          `[AI Extraction] Normalized LLM response (truncated): ${contentStr?.slice(0, 1000)}`,
+        );
+      }
+
+      // GeminiClient no lanza: ante un fallo devuelve `{content: ''}` con el
+      // error adjunto. Sin este chequeo el string vacío seguía de largo y
+      // terminaba en una extracción vacía indistinguible de un documento sin
+      // datos, que es un problema completamente distinto.
+      if (!contentStr || !contentStr.trim()) {
+        const detalle = String(
+          (response as any)?.error?.message ?? (response as any)?.error ?? '',
+        );
+        console.error(
+          `[AI Extraction] El modelo no devolvió contenido. ${detalle || '(sin detalle)'}`,
+        );
+        return {
+          productos: [],
+          error: {
+            codigo: 'ia_sin_respuesta',
+            mensaje: /429|RESOURCE_EXHAUSTED|quota|rate limit/i.test(detalle)
+              ? 'El servicio de IA está sin cuota disponible en este momento. Volvé a intentar en unos minutos.'
+              : 'La IA no pudo procesar el documento. Volvé a intentar en unos minutos.',
+            detalle: detalle.slice(0, 500) || undefined,
+          },
+        };
+      }
+
       let output: any;
       let sanitized: string = contentStr;
       try {
@@ -786,19 +943,52 @@ export class LangChainAIService implements AIService {
 
         // If still no output, return a safe, best-effort fallback so the HTTP layer receives JSON instead of a 500
         if (!output) {
-          console.warn(
-            '[AI Extraction] Could not parse LLM response; returning empty extraction',
+          console.error(
+            `[AI Extraction] No se pudo interpretar la respuesta del modelo. Recorte: ${contentStr.slice(0, 500)}`,
           );
-          return { productos: [] };
+          return {
+            productos: [],
+            error: {
+              codigo: 'respuesta_ilegible',
+              mensaje:
+                'La IA respondió en un formato que no se pudo interpretar. Volvé a intentar.',
+              detalle: `${
+                parseErr instanceof Error ? parseErr.message : String(parseErr)
+              } | respuesta: ${contentStr.slice(0, 300)}`,
+            },
+          };
         }
       }
 
-      return normalizarExtraccion(output);
+      const extraccion = normalizarExtraccion(output);
+
+      // El modelo contestó bien pero no reconoció nada: pasa cuando el archivo
+      // no es un documento de importación (una foto cualquiera, un contrato).
+      // No es lo mismo que un fallo técnico y el usuario necesita distinguirlo.
+      if (!extraccionAportoDatos(extraccion)) {
+        console.warn(
+          '[AI Extraction] El modelo respondió pero no reconoció ningún dato aprovechable.',
+        );
+        extraccion.error = {
+          codigo: 'sin_datos',
+          mensaje:
+            'La IA leyó el documento pero no reconoció datos de una factura, packing list o guía de transporte. Verificá que sea el archivo correcto y que se lea con claridad.',
+        };
+      }
+
+      return extraccion;
     } catch (error) {
       console.error('[AI Extraction] Error calling LLM:', error);
       // Devolver una extracción vacía en vez de datos inventados: el usuario
       // completa los campos a mano, pero nunca firma un dato falso.
-      return { productos: [] };
+      return {
+        productos: [],
+        error: {
+          codigo: 'error_interno',
+          mensaje: 'No se pudo procesar el documento.',
+          detalle: String((error as any)?.message ?? error).slice(0, 500),
+        },
+      };
     }
   }
 
