@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { randomBytes } from 'crypto';
 import { mkdir, writeFile } from 'fs/promises';
+import { tmpdir } from 'os';
 import { extname, join, resolve } from 'path';
 import {
   AI_SERVICE,
@@ -89,9 +90,24 @@ const CONFIANZA = {
  * Dónde quedan los archivos originales. Se guardan porque revisar un dato que
  * leyó la IA sin poder mirar el papel al lado obliga a abrir el PDF por fuera
  * de la aplicación — y ahí se pierde la mitad de la ventaja de extraerlo.
+ *
+ * En serverless (Vercel, Lambda) el directorio del despliegue es de solo
+ * lectura: lo único escribible es el temporal del sistema. Ahí los archivos no
+ * sobreviven a la instancia — la descarga responde 404 y la extracción, que ya
+ * quedó en la base, no se pierde. Para conservarlos de verdad hace falta
+ * apuntar ARCHIVOS_DIR a un volumen persistente o mover esto a un blob store.
  */
+function directorioPorDefecto(): string {
+  const esServerless = Boolean(
+    process.env.VERCEL ?? process.env.AWS_LAMBDA_FUNCTION_NAME,
+  );
+  return esServerless
+    ? join(tmpdir(), 'dims-facturas')
+    : join(process.cwd(), 'data', 'facturas');
+}
+
 export const ARCHIVOS_DIR = resolve(
-  process.env.ARCHIVOS_DIR ?? join(process.cwd(), 'data', 'facturas'),
+  process.env.ARCHIVOS_DIR ?? directorioPorDefecto(),
 );
 
 /** Nombre de archivo seguro: nada que pueda escaparse del directorio. */
