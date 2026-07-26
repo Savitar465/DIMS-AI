@@ -29,7 +29,6 @@ async function bootstrap() {
   });
   app.useLogger(app.get(Logger));
   const logger = app.get(Logger);
-  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
   app.useGlobalFilters(new AllExceptionsFilter(logger));
   app.useGlobalInterceptors(new LoggingInterceptor(logger));
   app.useGlobalPipes(new ValidationPipe({
